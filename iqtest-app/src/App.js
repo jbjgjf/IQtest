@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
 import questionBank, { parseCell, shuffleArray } from './questions';
 import MatrixItem, { MatrixCellThumb } from './components/MatrixItem';
+import { Analytics } from '@vercel/analytics/react';
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -426,6 +427,7 @@ function App() {
           {toastMessage}
         </div>
       )}
+      <Analytics />
     </div>
   );
 }
