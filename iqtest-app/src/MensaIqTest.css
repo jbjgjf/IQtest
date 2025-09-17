@@ -1,0 +1,97 @@
+.mensa-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #f1f5f9;
+}
+
+.mensa-card {
+  width: min(480px, 100%);
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.15);
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  text-align: center;
+}
+
+.mensa-progress {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mensa-progress-track {
+  width: 100%;
+  height: 10px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.mensa-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #2563eb, #38bdf8);
+  border-radius: inherit;
+  transition: width 0.3s ease;
+}
+
+.mensa-progress-label {
+  font-size: 0.9rem;
+  color: #475569;
+  text-align: right;
+}
+
+.mensa-question {
+  font-size: 1.5rem;
+  color: #0f172a;
+  margin: 0;
+}
+
+.mensa-options {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mensa-option-button {
+  padding: 16px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.mensa-option-button:hover {
+  background: #1d4ed8;
+  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.35);
+  transform: translateY(-1px);
+}
+
+.mensa-option-button:focus-visible {
+  outline: 3px solid rgba(56, 189, 248, 0.6);
+  outline-offset: 3px;
+}
+
+.mensa-result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: #0f172a;
+}
+
+.mensa-score {
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: #2563eb;
+  margin: 0;
+}
