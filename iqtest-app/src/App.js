@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
-import questionBank, { parseCell, shuffleArray } from './questions';
+import { parseCell, shuffleArray } from './questions';
 import MatrixItem, { MatrixCellThumb } from './components/MatrixItem';
 import { Analytics } from '@vercel/analytics/react';
+import { loadQuizPack } from './data/loader';
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -26,6 +27,9 @@ const normCdf = (x) => 0.5 * (1 + erf(x / Math.SQRT2));
 function App() {
   const QUESTION_TIME = 30;
 
+  const [pack, setPack] = useState(null);
+  const questions = useMemo(() => pack?.questions ?? [], [pack]);
+
   const [current, setCurrent] = useState(0);
   const [score, setScore] = useState(0);
   const [finished, setFinished] = useState(false);
@@ -33,7 +37,7 @@ function App() {
   const [feedback, setFeedback] = useState(null);
   const [selectedOption, setSelectedOption] = useState(null);
   const [answerLocked, setAnswerLocked] = useState(false);
-  const [shuffledOptions, setShuffledOptions] = useState(() => shuffleArray(questionBank[0].options));
+  const [shuffledOptions, setShuffledOptions] = useState([]);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [lastResult, setLastResult] = useState(null);
   const [sharedResult, setSharedResult] = useState(null);
@@ -44,9 +48,10 @@ function App() {
   const toastTimeoutRef = useRef(null);
   const optionRefs = useRef([]);
 
-  const total = questionBank.length;
-  const currentQuestion = questionBank[current];
-  const progressPct = Math.round(((finished ? total : current) / total) * 100);
+  const total = questions.length;
+  const currentQuestion = questions[current];
+  const currentKind = currentQuestion?.type ?? currentQuestion?.kind;
+  const progressPct = total > 0 ? Math.round(((finished ? total : current) / total) * 100) : 0;
   const timerProgressDeg = Math.max(0, Math.min(360, (remaining / QUESTION_TIME) * 360));
 
   const stopTimer = useCallback(() => {
@@ -61,6 +66,12 @@ function App() {
       clearTimeout(feedbackTimeoutRef.current);
       feedbackTimeoutRef.current = null;
     }
+  }, []);
+
+  useEffect(() => {
+    loadQuizPack().then(setPack).catch((error) => {
+      console.error(error);
+    });
   }, []);
 
   useEffect(() => {
@@ -119,10 +130,14 @@ function App() {
   }, [current, shuffledOptions.length]);
 
   useEffect(() => {
-    if (!finished) {
-      setShuffledOptions(shuffleArray(questionBank[current].options));
+    if (finished) return;
+    const nextQuestion = questions[current];
+    if (!nextQuestion || !Array.isArray(nextQuestion.options)) {
+      setShuffledOptions([]);
+      return;
     }
-  }, [current, finished]);
+    setShuffledOptions(shuffleArray(nextQuestion.options));
+  }, [current, finished, questions]);
 
   useEffect(() => () => {
     stopTimer();
@@ -234,11 +249,12 @@ function App() {
     setSelectedOption(null);
     setAnswerLocked(false);
     setElapsedSeconds(0);
-    setShuffledOptions(shuffleArray(questionBank[0].options));
+    const firstOptions = questions[0]?.options;
+    setShuffledOptions(Array.isArray(firstOptions) ? shuffleArray(firstOptions) : []);
     setToastMessage('');
   };
 
-  const ratio = score / total;
+  const ratio = total > 0 ? score / total : 0;
   let resultClass = 'result-average';
   let resultMessage = '平均以上。練習を重ねるとさらに安定します。';
   if (ratio >= 0.9) {
@@ -320,6 +336,34 @@ function App() {
     window.history.replaceState(null, '', nextUrl);
   };
 
+  if (!pack) {
+    return (
+      <div className="app">
+        <div className="wrap">
+          <header className="header">
+            <h1 className="title">ミニIQテスト（デモ）</h1>
+          </header>
+          <p className="note">読み込み中…</p>
+        </div>
+        <Analytics />
+      </div>
+    );
+  }
+
+  if (!currentQuestion) {
+    return (
+      <div className="app">
+        <div className="wrap">
+          <header className="header">
+            <h1 className="title">ミニIQテスト（デモ）</h1>
+          </header>
+          <p className="note">問題データを読み込めませんでした。</p>
+        </div>
+        <Analytics />
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <div className="wrap">
@@ -377,16 +421,16 @@ function App() {
 
         {!finished ? (
           <div className="card">
-            {currentQuestion.type === 'matrix' && (
+            {currentKind === 'matrix' && (
               <MatrixItem seed={currentQuestion.svgSeed} missingCell />
             )}
             <div className="qtext">Q{current + 1}: {currentQuestion.text}</div>
-            <div className={`opts ${currentQuestion.type === 'matrix' ? 'opts-matrix' : ''}`.trim()}>
+            <div className={`opts ${currentKind === 'matrix' ? 'opts-matrix' : ''}`.trim()}>
               {shuffledOptions.map((opt, i) => {
                 const isSelected = selectedOption === opt;
                 const currentFeedback = isSelected ? feedback : null;
-                const buttonClass = `btn ${currentQuestion.type === 'matrix' ? 'btn-thumb matrix-option' : ''}`.trim();
-                const parsedCell = currentQuestion.type === 'matrix' ? parseCell(opt) : null;
+                const buttonClass = `btn ${currentKind === 'matrix' ? 'btn-thumb matrix-option' : ''}`.trim();
+                const parsedCell = currentKind === 'matrix' ? parseCell(opt) : null;
 
                 return (
                   <button
@@ -401,9 +445,9 @@ function App() {
                     onClick={() => handleAnswer(opt)}
                     onKeyDown={(event) => handleOptionKeyDown(event, i)}
                     disabled={answerLocked}
-                    aria-label={currentQuestion.type === 'matrix' ? `図形選択肢 ${i + 1}` : undefined}
+                    aria-label={currentKind === 'matrix' ? `図形選択肢 ${i + 1}` : undefined}
                   >
-                    {currentQuestion.type === 'matrix' && parsedCell ? (
+                    {currentKind === 'matrix' && parsedCell ? (
                       <MatrixCellThumb cell={parsedCell} />
                     ) : (
                       opt
