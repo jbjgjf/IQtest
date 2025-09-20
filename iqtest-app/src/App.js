@@ -77,6 +77,14 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (process.env.NODE_ENV !== 'production') return;
+    const hasBeacon = typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function';
+    console.log('[analytics] production mode. navigator.sendBeacon =', hasBeacon);
+    const img = new Image();
+    img.src = '/_vercel/insights/script.js';
+  }, []);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
     const s = params.get('s');
