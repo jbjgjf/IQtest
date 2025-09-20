@@ -30,15 +30,104 @@ const toFiniteNumber = (value, fallback) => {
   return Number.isFinite(num) ? num : fallback;
 };
 
+const DEFAULT_QUESTION_TIME = 30;
+const DIFFICULTY_ORDER = ['easy', 'medium', 'hard'];
+const DEFAULT_DIFFICULTY_TARGETS = { easy: 4, medium: 5, hard: 3 };
+const DEFAULT_TOTAL_QUESTIONS = Object.values(DEFAULT_DIFFICULTY_TARGETS).reduce(
+  (sum, count) => sum + count,
+  0
+);
+
+const normalizeDifficulty = (value) => {
+  if (!value) return 'medium';
+  const normalized = String(value).toLowerCase();
+  return DIFFICULTY_ORDER.includes(normalized) ? normalized : 'medium';
+};
+
+const getQuestionTimeLimit = (question) => {
+  if (!question) return DEFAULT_QUESTION_TIME;
+  const limit = toFiniteNumber(question.timeLimitSec, null);
+  return limit ?? DEFAULT_QUESTION_TIME;
+};
+
+const selectQuestionsByDifficulty = (allQuestions, targets = DEFAULT_DIFFICULTY_TARGETS) => {
+  if (!Array.isArray(allQuestions) || allQuestions.length === 0) {
+    return [];
+  }
+
+  const desiredTotalRaw = Object.values(targets ?? {}).reduce((sum, value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? sum + numeric : sum;
+  }, 0);
+  const desiredTotal = desiredTotalRaw > 0 ? desiredTotalRaw : DEFAULT_TOTAL_QUESTIONS;
+  const limit = Math.min(desiredTotal, allQuestions.length);
+
+  const shuffledAll = shuffleArray(allQuestions);
+  const buckets = DIFFICULTY_ORDER.reduce((acc, diff) => {
+    acc[diff] = [];
+    return acc;
+  }, {});
+
+  shuffledAll.forEach((question) => {
+    const diff = normalizeDifficulty(question.difficulty);
+    buckets[diff].push(question);
+  });
+
+  const selections = [];
+  const seenKeys = new Set();
+  const makeKey = (question) => `${question._pack ?? 'pack'}::${question.id ?? question.text ?? Math.random().toString(36)}`;
+  const addQuestion = (question) => {
+    if (!question) return false;
+    const key = makeKey(question);
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    selections.push(question);
+    return true;
+  };
+
+  DIFFICULTY_ORDER.forEach((diff) => {
+    const targetCount = Number(targets?.[diff]) || 0;
+    const bucket = buckets[diff] ?? [];
+    let taken = 0;
+    for (let i = 0; i < bucket.length && taken < targetCount; i += 1) {
+      if (addQuestion(bucket[i])) {
+        taken += 1;
+      }
+    }
+  });
+
+  for (let i = 0; i < shuffledAll.length && selections.length < limit; i += 1) {
+    addQuestion(shuffledAll[i]);
+  }
+
+  if (selections.length < limit) {
+    shuffledAll.forEach((question) => {
+      if (selections.length < limit) {
+        addQuestion(question);
+      }
+    });
+  }
+
+  return shuffleArray(selections);
+};
+
 const normalizeQuestion = (raw) => {
   if (!raw) return null;
   const kind = raw.kind ?? raw.type ?? 'unknown';
+  const difficulty = normalizeDifficulty(raw.difficulty);
+  const tags = Array.isArray(raw.tags) ? raw.tags : undefined;
+  const normalizedTimeLimit = toFiniteNumber(raw.timeLimitSec, null);
+  const normalizedWeight = toFiniteNumber(raw.weight, null);
 
   if (kind !== 'matrix') {
     return {
       ...raw,
       kind,
       type: kind,
+      difficulty,
+      tags,
+      timeLimitSec: normalizedTimeLimit ?? undefined,
+      weight: normalizedWeight ?? raw.weight,
       _pack: raw._pack,
     };
   }
@@ -82,23 +171,25 @@ const normalizeQuestion = (raw) => {
     ...raw,
     kind,
     type: kind,
+    difficulty,
+    tags,
     svgSeed: seed ?? raw.svgSeed,
     options,
     answer,
+    timeLimitSec: normalizedTimeLimit ?? undefined,
+    weight: normalizedWeight ?? raw.weight,
     _pack: raw._pack,
   };
 };
 
 function App() {
-  const QUESTION_TIME = 30;
-
   const [questions, setQuestions] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const [current, setCurrent] = useState(0);
   const [score, setScore] = useState(0);
   const [finished, setFinished] = useState(false);
-  const [remaining, setRemaining] = useState(QUESTION_TIME);
+  const [remaining, setRemaining] = useState(DEFAULT_QUESTION_TIME);
   const [feedback, setFeedback] = useState(null);
   const [selectedOption, setSelectedOption] = useState(null);
   const [answerLocked, setAnswerLocked] = useState(false);
@@ -116,8 +207,11 @@ function App() {
   const total = questions.length;
   const currentQuestion = questions[current];
   const currentKind = currentQuestion?.type ?? currentQuestion?.kind;
+  const currentTimeLimit = getQuestionTimeLimit(currentQuestion);
   const progressPct = total > 0 ? Math.round(((finished ? total : current) / total) * 100) : 0;
-  const timerProgressDeg = Math.max(0, Math.min(360, (remaining / QUESTION_TIME) * 360));
+  const timerProgressDeg = currentTimeLimit > 0
+    ? Math.max(0, Math.min(360, (remaining / currentTimeLimit) * 360))
+    : 0;
 
   const stopTimer = useCallback(() => {
     if (intervalRef.current) {
@@ -142,7 +236,8 @@ function App() {
         const normalized = loadedQuestions
           .map((question) => normalizeQuestion(question))
           .filter(Boolean);
-        setQuestions(normalized);
+        const selected = selectQuestionsByDifficulty(normalized, DEFAULT_DIFFICULTY_TARGETS);
+        setQuestions(selected);
       })
       .catch((error) => {
         if (!cancelled) {
@@ -242,13 +337,14 @@ function App() {
       return;
     }
 
-    setRemaining(QUESTION_TIME);
+    const timeLimit = currentTimeLimit;
+    setRemaining(timeLimit);
     setAnswerLocked(false);
     setSelectedOption(null);
     setFeedback(null);
 
     const onTimeout = () => {
-      setElapsedSeconds((prev) => prev + QUESTION_TIME);
+      setElapsedSeconds((prev) => prev + timeLimit);
       setAnswerLocked(true);
       setFeedback('timeout');
       clearFeedbackTimeout();
@@ -276,13 +372,14 @@ function App() {
     return () => {
       stopTimer();
     };
-  }, [current, finished, stopTimer, clearFeedbackTimeout, advanceQuestion, QUESTION_TIME]);
+  }, [current, finished, stopTimer, clearFeedbackTimeout, advanceQuestion, currentTimeLimit]);
 
   const handleAnswer = (option) => {
     if (answerLocked || finished) return;
 
     const isCorrect = option === currentQuestion.answer;
-    const timeSpent = clamp(QUESTION_TIME - remaining, 0, QUESTION_TIME);
+    const safeLimit = currentTimeLimit > 0 ? currentTimeLimit : DEFAULT_QUESTION_TIME;
+    const timeSpent = clamp(safeLimit - remaining, 0, safeLimit);
 
     stopTimer();
     clearFeedbackTimeout();
@@ -330,7 +427,7 @@ function App() {
     setCurrent(0);
     setScore(0);
     setFinished(false);
-    setRemaining(QUESTION_TIME);
+    setRemaining(getQuestionTimeLimit(questions[0]));
     setFeedback(null);
     setSelectedOption(null);
     setAnswerLocked(false);
@@ -352,7 +449,10 @@ function App() {
   }
 
   const totalSeconds = elapsedSeconds;
-  const expectedTotal = total * QUESTION_TIME || QUESTION_TIME;
+  const expectedTotal = questions.reduce(
+    (sum, question) => sum + getQuestionTimeLimit(question),
+    0
+  ) || DEFAULT_QUESTION_TIME;
   const accuracyFactor = ratio * 2 - 1;
   const rawTimeFactor = 1.0 + (0.5 - (expectedTotal ? totalSeconds / expectedTotal : 0)) * 0.15;
   const timeFactor = clamp(rawTimeFactor, 0.85, 1.15);

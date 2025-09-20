@@ -5,6 +5,8 @@
     {
       "id": "m1",
       "kind": "matrix",
+      "difficulty": "medium",
+      "tags": ["nonverbal", "pattern"],
       "grid": [
         { "index": 0, "row": 0, "col": 0, "seed": 42 },
         { "index": 1, "row": 0, "col": 1, "seed": 42 },
@@ -34,6 +36,8 @@
     {
       "id": "m2",
       "kind": "matrix",
+      "difficulty": "hard",
+      "tags": ["nonverbal", "matrix"],
       "grid": [
         { "index": 0, "row": 0, "col": 0, "seed": 77 },
         { "index": 1, "row": 0, "col": 1, "seed": 77 },
@@ -57,8 +61,101 @@
         { "index": 5, "seed": 77, "variant": 206 }
       ],
       "answerIndex": 2,
+      "timeLimitSec": 55,
+      "weight": 1.4
+    },
+    {
+      "id": "m3",
+      "kind": "matrix",
+      "difficulty": "medium",
+      "tags": ["nonverbal", "symmetry"],
+      "grid": [
+        { "index": 0, "row": 0, "col": 0, "seed": 105 },
+        { "index": 1, "row": 0, "col": 1, "seed": 105 },
+        { "index": 2, "row": 0, "col": 2, "seed": 105 },
+        { "index": 3, "row": 1, "col": 0, "seed": 105 },
+        { "index": 4, "row": 1, "col": 1, "seed": 105 },
+        { "index": 5, "row": 1, "col": 2, "seed": 105 },
+        { "index": 6, "row": 2, "col": 0, "seed": 105 },
+        { "index": 7, "row": 2, "col": 1, "seed": 105 },
+        { "index": 8, "row": 2, "col": 2, "seed": 105 }
+      ],
+      "missingIndex": 8,
+      "seed": 105,
+      "rule": "Balance the alternating accents to restore the bottom-right cell.",
+      "candidates": [
+        { "index": 0, "seed": 105, "variant": 301 },
+        { "index": 1, "seed": 105, "variant": 302 },
+        { "index": 2, "seed": 105, "variant": 303 },
+        { "index": 3, "seed": 105, "variant": 304 },
+        { "index": 4, "seed": 105, "variant": 305 },
+        { "index": 5, "seed": 105, "variant": 306 }
+      ],
+      "answerIndex": 2,
       "timeLimitSec": 45,
-      "weight": 1.2
+      "weight": 1.1
+    },
+    {
+      "id": "m4",
+      "kind": "matrix",
+      "difficulty": "hard",
+      "tags": ["nonverbal", "rotation"],
+      "grid": [
+        { "index": 0, "row": 0, "col": 0, "seed": 150 },
+        { "index": 1, "row": 0, "col": 1, "seed": 150 },
+        { "index": 2, "row": 0, "col": 2, "seed": 150 },
+        { "index": 3, "row": 1, "col": 0, "seed": 150 },
+        { "index": 4, "row": 1, "col": 1, "seed": 150 },
+        { "index": 5, "row": 1, "col": 2, "seed": 150 },
+        { "index": 6, "row": 2, "col": 0, "seed": 150 },
+        { "index": 7, "row": 2, "col": 1, "seed": 150 },
+        { "index": 8, "row": 2, "col": 2, "seed": 150 }
+      ],
+      "missingIndex": 8,
+      "seed": 150,
+      "rule": "Track alternating inversions and fill the final rotation gap.",
+      "candidates": [
+        { "index": 0, "seed": 150, "variant": 401 },
+        { "index": 1, "seed": 150, "variant": 402 },
+        { "index": 2, "seed": 150, "variant": 403 },
+        { "index": 3, "seed": 150, "variant": 404 },
+        { "index": 4, "seed": 150, "variant": 405 },
+        { "index": 5, "seed": 150, "variant": 406 }
+      ],
+      "answerIndex": 4,
+      "timeLimitSec": 55,
+      "weight": 1.4
+    },
+    {
+      "id": "m5",
+      "kind": "matrix",
+      "difficulty": "medium",
+      "tags": ["nonverbal", "progression"],
+      "grid": [
+        { "index": 0, "row": 0, "col": 0, "seed": 210 },
+        { "index": 1, "row": 0, "col": 1, "seed": 210 },
+        { "index": 2, "row": 0, "col": 2, "seed": 210 },
+        { "index": 3, "row": 1, "col": 0, "seed": 210 },
+        { "index": 4, "row": 1, "col": 1, "seed": 210 },
+        { "index": 5, "row": 1, "col": 2, "seed": 210 },
+        { "index": 6, "row": 2, "col": 0, "seed": 210 },
+        { "index": 7, "row": 2, "col": 1, "seed": 210 },
+        { "index": 8, "row": 2, "col": 2, "seed": 210 }
+      ],
+      "missingIndex": 8,
+      "seed": 210,
+      "rule": "Continue the color gradient progression down the final column.",
+      "candidates": [
+        { "index": 0, "seed": 210, "variant": 501 },
+        { "index": 1, "seed": 210, "variant": 502 },
+        { "index": 2, "seed": 210, "variant": 503 },
+        { "index": 3, "seed": 210, "variant": 504 },
+        { "index": 4, "seed": 210, "variant": 505 },
+        { "index": 5, "seed": 210, "variant": 506 }
+      ],
+      "answerIndex": 1,
+      "timeLimitSec": 45,
+      "weight": 1.15
     }
   ]
 }
