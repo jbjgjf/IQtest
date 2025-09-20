@@ -1,0 +1,64 @@
+{
+  "version": "v1",
+  "title": "Matrix Mini",
+  "questions": [
+    {
+      "id": "m1",
+      "kind": "matrix",
+      "grid": [
+        { "index": 0, "row": 0, "col": 0, "seed": 42 },
+        { "index": 1, "row": 0, "col": 1, "seed": 42 },
+        { "index": 2, "row": 0, "col": 2, "seed": 42 },
+        { "index": 3, "row": 1, "col": 0, "seed": 42 },
+        { "index": 4, "row": 1, "col": 1, "seed": 42 },
+        { "index": 5, "row": 1, "col": 2, "seed": 42 },
+        { "index": 6, "row": 2, "col": 0, "seed": 42 },
+        { "index": 7, "row": 2, "col": 1, "seed": 42 },
+        { "index": 8, "row": 2, "col": 2, "seed": 42 }
+      ],
+      "missingIndex": 8,
+      "seed": 42,
+      "rule": "Identify the shape that completes the rotation and color progression across the grid.",
+      "candidates": [
+        { "index": 0, "seed": 42, "variant": 101 },
+        { "index": 1, "seed": 42, "variant": 102 },
+        { "index": 2, "seed": 42, "variant": 103 },
+        { "index": 3, "seed": 42, "variant": 104 },
+        { "index": 4, "seed": 42, "variant": 105 },
+        { "index": 5, "seed": 42, "variant": 106 }
+      ],
+      "answerIndex": 0,
+      "timeLimitSec": 45,
+      "weight": 1.2
+    },
+    {
+      "id": "m2",
+      "kind": "matrix",
+      "grid": [
+        { "index": 0, "row": 0, "col": 0, "seed": 77 },
+        { "index": 1, "row": 0, "col": 1, "seed": 77 },
+        { "index": 2, "row": 0, "col": 2, "seed": 77 },
+        { "index": 3, "row": 1, "col": 0, "seed": 77 },
+        { "index": 4, "row": 1, "col": 1, "seed": 77 },
+        { "index": 5, "row": 1, "col": 2, "seed": 77 },
+        { "index": 6, "row": 2, "col": 0, "seed": 77 },
+        { "index": 7, "row": 2, "col": 1, "seed": 77 },
+        { "index": 8, "row": 2, "col": 2, "seed": 77 }
+      ],
+      "missingIndex": 8,
+      "seed": 77,
+      "rule": "Find the tile that maintains the accent and rotation progression in the final row.",
+      "candidates": [
+        { "index": 0, "seed": 77, "variant": 201 },
+        { "index": 1, "seed": 77, "variant": 202 },
+        { "index": 2, "seed": 77, "variant": 203 },
+        { "index": 3, "seed": 77, "variant": 204 },
+        { "index": 4, "seed": 77, "variant": 205 },
+        { "index": 5, "seed": 77, "variant": 206 }
+      ],
+      "answerIndex": 2,
+      "timeLimitSec": 45,
+      "weight": 1.2
+    }
+  ]
+}
