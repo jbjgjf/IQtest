@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
 import { parseCell, shuffleArray } from './questions';
 import MatrixItem, { MatrixCellThumb } from './components/MatrixItem';
 import { Analytics } from '@vercel/analytics/react';
-import { loadQuizPack } from './data/loader';
+import { loadPacks } from './data/loader';
+import { generateMatrixCell, mutateCell, serializeCell } from './matrixUtils';
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -24,11 +25,75 @@ const erf = (x) => {
 
 const normCdf = (x) => 0.5 * (1 + erf(x / Math.SQRT2));
 
+const toFiniteNumber = (value, fallback) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+};
+
+const normalizeQuestion = (raw) => {
+  if (!raw) return null;
+  const kind = raw.kind ?? raw.type ?? 'unknown';
+
+  if (kind !== 'matrix') {
+    return {
+      ...raw,
+      kind,
+      type: kind,
+      _pack: raw._pack,
+    };
+  }
+
+  const seed = toFiniteNumber(raw.seed ?? raw.svgSeed, null);
+  const baseCell = seed !== null ? generateMatrixCell(seed, 2, 2) : null;
+  const serializedBase = baseCell ? serializeCell(baseCell) : null;
+  const candidates = Array.isArray(raw.candidates) ? raw.candidates : [];
+  let options = Array.isArray(raw.options) ? [...raw.options] : [];
+
+  if (candidates.length > 0 && baseCell) {
+    options = candidates.map((candidate, index) => {
+      if (typeof candidate?.cell === 'string') {
+        return candidate.cell;
+      }
+      if (index === raw.answerIndex && serializedBase) {
+        return serializedBase;
+      }
+      const variantSeed = toFiniteNumber(
+        candidate?.variant ?? candidate?.seed,
+        seed + (index + 1) * 31
+      );
+      const mutated = mutateCell(baseCell, variantSeed);
+      return serializeCell(mutated);
+    });
+  }
+
+  if ((!options || options.length === 0) && serializedBase) {
+    options = [serializedBase];
+  }
+
+  const safeIndex =
+    options.length > 0
+      ? clamp(toFiniteNumber(raw.answerIndex, 0), 0, options.length - 1)
+      : 0;
+
+  const answer =
+    options[safeIndex] ?? serializedBase ?? raw.answer;
+
+  return {
+    ...raw,
+    kind,
+    type: kind,
+    svgSeed: seed ?? raw.svgSeed,
+    options,
+    answer,
+    _pack: raw._pack,
+  };
+};
+
 function App() {
   const QUESTION_TIME = 30;
 
-  const [pack, setPack] = useState(null);
-  const questions = useMemo(() => pack?.questions ?? [], [pack]);
+  const [questions, setQuestions] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   const [current, setCurrent] = useState(0);
   const [score, setScore] = useState(0);
@@ -69,9 +134,30 @@ function App() {
   }, []);
 
   useEffect(() => {
-    loadQuizPack().then(setPack).catch((error) => {
-      console.error(error);
-    });
+    let cancelled = false;
+    setIsLoading(true);
+    loadPacks(['arithmetic.v1', 'matrix.v1'])
+      .then((loadedQuestions) => {
+        if (cancelled) return;
+        const normalized = loadedQuestions
+          .map((question) => normalizeQuestion(question))
+          .filter(Boolean);
+        setQuestions(normalized);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error(error);
+          setQuestions([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -336,7 +422,7 @@ function App() {
     window.history.replaceState(null, '', nextUrl);
   };
 
-  if (!pack) {
+  if (isLoading) {
     return (
       <div className="app">
         <div className="wrap">
