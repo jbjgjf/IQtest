@@ -1,10 +1,29 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { parseCell, shuffleArray } from './questions';
 import MatrixItem, { MatrixCellThumb } from './components/MatrixItem';
+import Leaderboard from './components/Leaderboard';
 import { Analytics } from '@vercel/analytics/react';
 import { loadPacks } from './data/loader';
-import { generateMatrixCell, mutateCell, serializeCell } from './matrixUtils';
+import {
+  generateMatrixCell,
+  mutateCell,
+  serializeCell,
+  canonicalMatrixKeyV2,
+  visualDistance,
+  toVisualFeatures,
+  VISUAL_DISTANCE_THRESHOLD,
+} from './matrixUtils';
+import { analytics, auth } from './firebase';
+import { saveScore } from './data/scoreApi';
+import { onAuthStateChanged } from 'firebase/auth';
+
+// Analytics: ブラウザのみで初期化を参照
+if (typeof window !== 'undefined' && analytics) {
+  // 何もしない：参照されるだけで beacon が送信される
+  // DevTools Network で /_vercel/insights/beacon と Firebase の収集を確認する
+}
+
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -111,7 +130,16 @@ const selectQuestionsByDifficulty = (allQuestions, targets = DEFAULT_DIFFICULTY_
   return shuffleArray(selections);
 };
 
-const normalizeQuestion = (raw) => {
+const isPrimitiveOption = (value) => typeof value === 'number' || typeof value === 'string';
+
+const looksLikeJsonString = (value) => typeof value === 'string' && value.trim().startsWith('{');
+
+const deriveSeedFromId = (id) => {
+  if (typeof id !== 'string' || id.length === 0) return null;
+  return id.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+};
+
+export const normalizeQuestion = (raw) => {
   if (!raw) return null;
   const kind = raw.kind ?? raw.type ?? 'unknown';
   const difficulty = normalizeDifficulty(raw.difficulty);
@@ -119,66 +147,222 @@ const normalizeQuestion = (raw) => {
   const normalizedTimeLimit = toFiniteNumber(raw.timeLimitSec, null);
   const normalizedWeight = toFiniteNumber(raw.weight, null);
 
-  if (kind !== 'matrix') {
-    return {
-      ...raw,
-      kind,
-      type: kind,
-      difficulty,
-      tags,
-      timeLimitSec: normalizedTimeLimit ?? undefined,
-      weight: normalizedWeight ?? raw.weight,
-      _pack: raw._pack,
-    };
-  }
-
-  const seed = toFiniteNumber(raw.seed ?? raw.svgSeed, null);
-  const baseCell = seed !== null ? generateMatrixCell(seed, 2, 2) : null;
-  const serializedBase = baseCell ? serializeCell(baseCell) : null;
-  const candidates = Array.isArray(raw.candidates) ? raw.candidates : [];
-  let options = Array.isArray(raw.options) ? [...raw.options] : [];
-
-  if (candidates.length > 0 && baseCell) {
-    options = candidates.map((candidate, index) => {
-      if (typeof candidate?.cell === 'string') {
-        return candidate.cell;
-      }
-      if (index === raw.answerIndex && serializedBase) {
-        return serializedBase;
-      }
-      const variantSeed = toFiniteNumber(
-        candidate?.variant ?? candidate?.seed,
-        seed + (index + 1) * 31
-      );
-      const mutated = mutateCell(baseCell, variantSeed);
-      return serializeCell(mutated);
-    });
-  }
-
-  if ((!options || options.length === 0) && serializedBase) {
-    options = [serializedBase];
-  }
-
-  const safeIndex =
-    options.length > 0
-      ? clamp(toFiniteNumber(raw.answerIndex, 0), 0, options.length - 1)
-      : 0;
-
-  const answer =
-    options[safeIndex] ?? serializedBase ?? raw.answer;
-
-  return {
+  const baseShape = {
     ...raw,
     kind,
     type: kind,
     difficulty,
     tags,
-    svgSeed: seed ?? raw.svgSeed,
-    options,
-    answer,
     timeLimitSec: normalizedTimeLimit ?? undefined,
     weight: normalizedWeight ?? raw.weight,
     _pack: raw._pack,
+  };
+
+  if (kind !== 'matrix') {
+    const rawOptions = Array.isArray(raw.options) ? raw.options : [];
+    let warned = false;
+    const sanitizedOptions = rawOptions.reduce((acc, option) => {
+      if (!isPrimitiveOption(option) || looksLikeJsonString(option)) {
+        if (!warned && typeof console !== 'undefined') {
+          console.warn('[normalizeQuestion] Dropping non-primitive option(s)', {
+            questionId: raw.id,
+          });
+          warned = true;
+        }
+        return acc;
+      }
+      acc.push(option);
+      return acc;
+    }, []);
+
+    const rawAnswer =
+      (isPrimitiveOption(raw.answer) && !looksLikeJsonString(raw.answer))
+        ? raw.answer
+        : undefined;
+
+    let answerIndex = Number.isInteger(raw.answerIndex)
+      ? clamp(raw.answerIndex, 0, Math.max(0, sanitizedOptions.length - 1))
+      : -1;
+
+    let answerValue = rawAnswer;
+    if (answerValue === undefined && answerIndex >= 0) {
+      answerValue = sanitizedOptions[answerIndex];
+    }
+    if (answerValue === undefined && sanitizedOptions.length > 0) {
+      answerValue = sanitizedOptions[0];
+      answerIndex = 0;
+    }
+    if (answerValue === undefined) {
+      answerIndex = -1;
+    }
+
+    return {
+      ...baseShape,
+      options: [...sanitizedOptions],
+      answer: answerValue,
+      answerIndex: answerIndex >= 0 ? answerIndex : sanitizedOptions.indexOf(answerValue),
+    };
+  }
+
+  let seed = toFiniteNumber(raw.seed ?? raw.svgSeed, null);
+  if (!Number.isFinite(seed)) {
+    const derived = deriveSeedFromId(raw.id);
+    seed = Number.isFinite(derived) ? derived : null;
+  }
+  const effectiveSeed = Number.isFinite(seed) ? seed : 1;
+
+  const baseCell = generateMatrixCell(effectiveSeed, 2, 2);
+  const answerSerialized = serializeCell(baseCell);
+  const answerFeatures = toVisualFeatures(baseCell);
+
+  const optionsMap = new Map();
+
+  const SHAPE_POOL = ['square', 'circle', 'triangle', 'diamond'];
+  const ACCENT_SHAPES = ['dot', 'cross', 'bar', 'slash'];
+  const ACCENT_POSITIONS = ['center', 'tl', 'tr', 'bl', 'br'];
+  const COLOR_POOL = ['#ef4444', '#22c55e', '#f97316', '#a855f7', '#0ea5e9', '#facc15'];
+
+  const ensureDistinctShape = (currentShape, offset = 0) => {
+    const baseIndex = SHAPE_POOL.indexOf(currentShape);
+    if (baseIndex === -1) {
+      return SHAPE_POOL[offset % SHAPE_POOL.length];
+    }
+    return SHAPE_POOL[(baseIndex + 1 + offset) % SHAPE_POOL.length];
+  };
+
+  const enforceDiversity = (candidate, seedBase) => {
+    let adjusted = { ...candidate };
+    let attempts = 0;
+    while (attempts < 3 && visualDistance(adjusted, answerFeatures) < VISUAL_DISTANCE_THRESHOLD) {
+      if (attempts === 0) {
+        adjusted = {
+          ...adjusted,
+          shape: ensureDistinctShape(adjusted.shape, seedBase + attempts),
+          rotation: ((Number.isFinite(adjusted.rotation) ? adjusted.rotation : 0) + ((seedBase % 3) + 1) * 90) % 360,
+        };
+      } else if (attempts === 1) {
+        adjusted = {
+          ...adjusted,
+          fill: COLOR_POOL[(seedBase + attempts) % COLOR_POOL.length],
+          accent: {
+            shape: ACCENT_SHAPES[(seedBase + attempts) % ACCENT_SHAPES.length],
+            position: ACCENT_POSITIONS[(seedBase + attempts) % ACCENT_POSITIONS.length],
+            color: COLOR_POOL[(seedBase + attempts + 2) % COLOR_POOL.length],
+          },
+        };
+      } else {
+        adjusted = {
+          ...adjusted,
+          invert: !adjusted.invert,
+          stripe: {
+            enabled: true,
+            angle: ((seedBase + attempts * 45) % 180),
+            width: 0.6,
+            gap: 0.25,
+          },
+        };
+      }
+      attempts += 1;
+    }
+    return adjusted;
+  };
+
+  const createVariant = (seedBase, steps = 3) => {
+    let variant = baseCell;
+    for (let step = 0; step < Math.max(1, steps); step += 1) {
+      variant = mutateCell(variant, seedBase + step * 19);
+    }
+    return enforceDiversity(variant, seedBase);
+  };
+
+  const normalizeOption = (value) => {
+    if (value == null) return null;
+    const serialized = typeof value === 'string' ? value : serializeCell(value);
+    let cellObject;
+    try {
+      cellObject = typeof value === 'string' ? JSON.parse(value) : value;
+    } catch (error) {
+      return null;
+    }
+    const features = toVisualFeatures(cellObject);
+    const key = canonicalMatrixKeyV2(cellObject);
+    return { serialized, features, key };
+  };
+
+  const hasSufficientContrast = (candidate, reference) => {
+    if (!candidate || !reference) return true;
+    const dv = Math.abs(candidate.fill.val - reference.fill.val);
+    const ds = Math.abs(candidate.fill.sat - reference.fill.sat);
+    const hueDiff = Math.min(
+      Math.abs(candidate.fill.hue - reference.fill.hue),
+      360 - Math.abs(candidate.fill.hue - reference.fill.hue)
+    ) / 360;
+    return dv >= 0.25 || ds >= 0.25 || hueDiff >= 0.2;
+  };
+
+  const tryAddOption = (candidateValue, { requireDiversity = false, requireContrast = false } = {}) => {
+    const normalized = normalizeOption(candidateValue);
+    if (!normalized) return false;
+    const { key, serialized, features } = normalized;
+    if (optionsMap.has(key)) {
+      return false;
+    }
+    if (requireContrast && !hasSufficientContrast(features, answerFeatures)) {
+      return false;
+    }
+    if (requireDiversity) {
+      for (const existing of optionsMap.values()) {
+        const distance = visualDistance(features, existing.features);
+        if (distance < VISUAL_DISTANCE_THRESHOLD) {
+          return false;
+        }
+      }
+    }
+    optionsMap.set(key, { serialized, features });
+    return true;
+  };
+
+  tryAddOption(answerSerialized);
+
+  const rawOptionList = Array.isArray(raw.options) ? raw.options : [];
+  rawOptionList.forEach((option) => {
+    tryAddOption(option);
+  });
+
+  const candidates = Array.isArray(raw.candidates) ? raw.candidates : [];
+  candidates.forEach((candidate, index) => {
+    const variantSeed = toFiniteNumber(candidate?.variant ?? candidate?.seed, null);
+    const seedOffset = Number.isFinite(variantSeed) ? variantSeed : effectiveSeed + (index + 1) * 17;
+    const mutated = createVariant(seedOffset, 4);
+    tryAddOption(mutated, { requireDiversity: true, requireContrast: true });
+  });
+
+  let fillerSeed = effectiveSeed + 101;
+  let attempts = 0;
+  const maxAttempts = 250;
+  while (optionsMap.size < 8 && attempts < maxAttempts) {
+    const mutated = createVariant(fillerSeed + attempts * 31, 5);
+    tryAddOption(mutated, { requireDiversity: true, requireContrast: true });
+    attempts += 1;
+  }
+
+  const optionEntries = Array.from(optionsMap.values());
+  const options = optionEntries.slice(0, 8).map((entry) => entry.serialized);
+  if (!options.includes(answerSerialized)) {
+    options.unshift(answerSerialized);
+    while (options.length > 8) {
+      options.pop();
+    }
+  }
+
+  const answerIndex = Math.max(0, options.indexOf(answerSerialized));
+
+  return {
+    ...baseShape,
+    svgSeed: effectiveSeed,
+    options,
+    answer: answerSerialized,
+    answerIndex,
   };
 };
 
@@ -198,6 +382,9 @@ function App() {
   const [lastResult, setLastResult] = useState(null);
   const [sharedResult, setSharedResult] = useState(null);
   const [toastMessage, setToastMessage] = useState('');
+  const [nickname, setNickname] = useState('');
+  const [submittingScore, setSubmittingScore] = useState(false);
+  const [submitMsg, setSubmitMsg] = useState('');
 
   const intervalRef = useRef(null);
   const feedbackTimeoutRef = useRef(null);
@@ -212,6 +399,44 @@ function App() {
   const timerProgressDeg = currentTimeLimit > 0
     ? Math.max(0, Math.min(360, (remaining / currentTimeLimit) * 360))
     : 0;
+
+  const displayOptions = useMemo(() => {
+    if (!Array.isArray(shuffledOptions)) {
+      return [];
+    }
+    if (currentKind === 'matrix') {
+      const seen = new Map();
+      return shuffledOptions.filter((option) => {
+        let key;
+        try {
+          key = canonicalMatrixKeyV2(option);
+        } catch (error) {
+          key = option;
+        }
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.set(key, true);
+        return true;
+      });
+    }
+    const filtered = shuffledOptions.filter((option) => {
+      if (!isPrimitiveOption(option) || looksLikeJsonString(option)) {
+        console.warn('[render] Filtering non-primitive option', {
+          questionId: currentQuestion?.id,
+          option,
+        });
+        return false;
+      }
+      return true;
+    });
+    console.assert(
+      filtered.every((value) => typeof value === 'number' || typeof value === 'string'),
+      'Non-matrix options must be primitive (number|string)',
+      filtered
+    );
+    return filtered;
+  }, [currentKind, shuffledOptions, currentQuestion?.id]);
 
   const stopTimer = useCallback(() => {
     if (intervalRef.current) {
@@ -269,6 +494,25 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      (user) => {
+        if (user?.uid) {
+          console.log(`Firebase UID: ${user.uid}`);
+        }
+      },
+      (error) => {
+        // eslint-disable-next-line no-console
+        console.error('[auth] onAuthStateChanged error', error);
+      }
+    );
+    return () => {
+      unsubscribe();
+    };
+  }, [auth]);
+
+  useEffect(() => {
     if (process.env.NODE_ENV !== 'production') return;
     const hasBeacon = typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function';
     console.log('[analytics] production mode. navigator.sendBeacon =', hasBeacon);
@@ -308,17 +552,19 @@ function App() {
 
   useEffect(() => {
     optionRefs.current = [];
-  }, [current, shuffledOptions.length]);
+  }, [currentQuestion?.id, displayOptions.length]);
 
   useEffect(() => {
     if (finished) return;
-    const nextQuestion = questions[current];
-    if (!nextQuestion || !Array.isArray(nextQuestion.options)) {
+    if (!currentQuestion || !Array.isArray(currentQuestion.options)) {
       setShuffledOptions([]);
       return;
     }
-    setShuffledOptions(shuffleArray(nextQuestion.options));
-  }, [current, finished, questions]);
+    setSelectedOption(null);
+    setAnswerLocked(false);
+    setFeedback(null);
+    setShuffledOptions(shuffleArray(currentQuestion.options));
+  }, [currentQuestion?.id, finished]);
 
   useEffect(() => () => {
     stopTimer();
@@ -404,7 +650,8 @@ function App() {
   const handleOptionKeyDown = (event, index) => {
     if (finished) return;
 
-    const len = shuffledOptions.length;
+    const len = displayOptions.length;
+    if (len === 0) return;
     if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
       event.preventDefault();
       const nextIndex = (index + 1) % len;
@@ -417,7 +664,7 @@ function App() {
       if (prevBtn) prevBtn.focus();
     } else if (event.key === 'Enter' || event.key === ' ' || event.key === 'Space') {
       event.preventDefault();
-      handleAnswer(shuffledOptions[index]);
+      handleAnswer(displayOptions[index]);
     }
   };
 
@@ -435,6 +682,9 @@ function App() {
     const firstOptions = questions[0]?.options;
     setShuffledOptions(Array.isArray(firstOptions) ? shuffleArray(firstOptions) : []);
     setToastMessage('');
+    setNickname('');
+    setSubmitMsg('');
+    setSubmittingScore(false);
   };
 
   const ratio = total > 0 ? score / total : 0;
@@ -512,6 +762,29 @@ function App() {
         setToastMessage('');
         toastTimeoutRef.current = null;
       }, 4000);
+    }
+  };
+
+  const handleSubmitScore = async () => {
+    if (!finished || submittingScore) return;
+    setSubmitMsg('');
+    const name = nickname.trim();
+    if (!name) {
+      setSubmitMsg('ニックネームを入力してください');
+      return;
+    }
+
+    setSubmittingScore(true);
+    try {
+      await saveScore({ nickname: name, score });
+      setNickname('');
+      setSubmitMsg('送信しました！');
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error(error);
+      setSubmitMsg('送信に失敗しました');
+    } finally {
+      setSubmittingScore(false);
     }
   };
 
@@ -612,7 +885,7 @@ function App() {
             )}
             <div className="qtext">Q{current + 1}: {currentQuestion.text}</div>
             <div className={`opts ${currentKind === 'matrix' ? 'opts-matrix' : ''}`.trim()}>
-              {shuffledOptions.map((opt, i) => {
+              {displayOptions.map((opt, i) => {
                 const isSelected = selectedOption === opt;
                 const currentFeedback = isSelected ? feedback : null;
                 const buttonClass = `btn ${currentKind === 'matrix' ? 'btn-thumb matrix-option' : ''}`.trim();
@@ -620,7 +893,7 @@ function App() {
 
                 return (
                   <button
-                    key={opt}
+                    key={`${currentQuestion?.id ?? 'question'}-${i}`}
                     type="button"
                     className={buttonClass}
                     ref={(el) => { optionRefs.current[i] = el; }}
@@ -653,12 +926,39 @@ function App() {
             <p className="note">推定上位 {percentile}%（簡易オフライン換算）</p>
             <p className="note result-message">{resultMessage}</p>
             <p className="note">※ 本デモは練習用です。正式なIQ検査とは異なります。</p>
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  placeholder="ニックネーム (1〜24文字)"
+                  maxLength={24}
+                  value={nickname}
+                  onChange={(event) => setNickname(event.target.value)}
+                  disabled={submittingScore}
+                  style={{ minWidth: 160 }}
+                />
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={handleSubmitScore}
+                  disabled={submittingScore}
+                >
+                  {submittingScore ? '送信中...' : 'スコアを送信'}
+                </button>
+              </div>
+              {submitMsg && (
+                <p className="note" style={{ marginTop: 8 }}>
+                  {submitMsg}
+                </p>
+              )}
+            </div>
             <div className="actions" style={{ justifyContent: 'center' }}>
               <button className="btn ghost" onClick={handleShare}>結果を共有</button>
               <button className="btn primary" onClick={reset}>もう一度</button>
             </div>
           </div>
         )}
+        <Leaderboard />
       </div>
       {toastMessage && (
         <div className="toast note" role="status" aria-live="polite">
