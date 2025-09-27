@@ -385,6 +385,7 @@ function App() {
   const [nickname, setNickname] = useState('');
   const [submittingScore, setSubmittingScore] = useState(false);
   const [submitMsg, setSubmitMsg] = useState('');
+  const [scoreSent, setScoreSent] = useState(false);
 
   const intervalRef = useRef(null);
   const feedbackTimeoutRef = useRef(null);
@@ -685,6 +686,7 @@ function App() {
     setNickname('');
     setSubmitMsg('');
     setSubmittingScore(false);
+    setScoreSent(false);
   };
 
   const ratio = total > 0 ? score / total : 0;
@@ -766,23 +768,44 @@ function App() {
   };
 
   const handleSubmitScore = async () => {
-    if (!finished || submittingScore) return;
+    if (!finished || submittingScore || scoreSent) return;
     setSubmitMsg('');
+
     const name = nickname.trim();
     if (!name) {
       setSubmitMsg('ニックネームを入力してください');
       return;
     }
+    if (name.length > 24) {
+      setSubmitMsg('ニックネームは24文字以内で入力してください');
+      return;
+    }
+    if (!Number.isInteger(score) || score < 0 || score > 9999) {
+      setSubmitMsg('スコアが正しくありません');
+      return;
+    }
 
     setSubmittingScore(true);
     try {
-      await saveScore({ nickname: name, score });
-      setNickname('');
-      setSubmitMsg('送信しました！');
+      const result = await saveScore({ nickname: name, score });
+      setNickname(name);
+      setScoreSent(true);
+      const message = result?.updated
+        ? 'ランキングを更新しました！'
+        : 'スコアを送信しました！';
+      setSubmitMsg(message);
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.error(error);
-      setSubmitMsg('送信に失敗しました');
+      console.error('[score] failed', error);
+      let message = '送信に失敗しました';
+      if (error?.message === 'invalid nickname') {
+        message = 'ニックネームは1〜24文字で入力してください';
+      } else if (error?.message === 'invalid score') {
+        message = 'スコアが正しくありません';
+      } else if (error?.message === 'not signed in') {
+        message = '通信状況を確認して再度お試しください';
+      }
+      setSubmitMsg(message);
     } finally {
       setSubmittingScore(false);
     }
@@ -934,16 +957,16 @@ function App() {
                   maxLength={24}
                   value={nickname}
                   onChange={(event) => setNickname(event.target.value)}
-                  disabled={submittingScore}
+                  disabled={submittingScore || scoreSent}
                   style={{ minWidth: 160 }}
                 />
                 <button
                   type="button"
                   className="btn primary"
                   onClick={handleSubmitScore}
-                  disabled={submittingScore}
+                  disabled={submittingScore || scoreSent}
                 >
-                  {submittingScore ? '送信中...' : 'スコアを送信'}
+                  {scoreSent ? '送信済み' : submittingScore ? '送信中...' : 'スコアを送信'}
                 </button>
               </div>
               {submitMsg && (

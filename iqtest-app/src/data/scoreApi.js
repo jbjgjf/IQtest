@@ -1,26 +1,40 @@
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { auth, db } from '../firebase';
+
+const MAX_NICKNAME_LENGTH = 24;
+const MAX_SCORE = 9999;
+
+const sanitizeNickname = (nickname) => {
+  if (typeof nickname !== 'string') return '';
+  return nickname.trim();
+};
 
 export async function saveScore({ nickname, score }) {
-  const trimmed = typeof nickname === 'string' ? nickname.trim() : '';
-  if (!trimmed || trimmed.length < 1 || trimmed.length > 24) {
-    throw new Error('ニックネームは1〜24文字で入力してください');
+  const cleanNickname = sanitizeNickname(nickname);
+  if (!cleanNickname || cleanNickname.length > MAX_NICKNAME_LENGTH) {
+    throw new Error('invalid nickname');
+  }
+  if (!Number.isInteger(score) || score < 0 || score > MAX_SCORE) {
+    throw new Error('invalid score');
   }
 
-  const numericScore = Number(score);
-  if (!Number.isFinite(numericScore) || numericScore < 0) {
-    throw new Error('スコアが正しくありません');
+  const user = auth.currentUser;
+  const uid = user?.uid;
+  if (!uid) {
+    throw new Error('not signed in');
   }
 
-  try {
-    await addDoc(collection(db, 'scores'), {
-      nickname: trimmed,
-      score: numericScore,
-      createdAt: serverTimestamp(),
-    });
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Failed to save score', error);
-    throw error;
-  }
+  const ref = doc(db, 'scores', uid);
+  const snapshot = await getDoc(ref);
+  const existed = snapshot.exists();
+
+  const payload = {
+    nickname: cleanNickname,
+    score,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  await setDoc(ref, payload, { merge: true });
+  return { ok: true, updated: existed };
 }
