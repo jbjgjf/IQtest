@@ -3,8 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
-    <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
+    <!-- Favicon: SVG優先 + PNGフォールバック -->
+    <link rel="icon" href="%PUBLIC_URL%/favicon.svg?v=2" type="image/svg+xml">
+    <link rel="alternate icon" href="%PUBLIC_URL%/favicon-32.png" sizes="32x32" type="image/png">
+    <link rel="alternate icon" href="%PUBLIC_URL%/favicon-16.png" sizes="16x16" type="image/png">
+
+    <!-- iOS（現時点は未同梱。追って差し替え） -->
+    <link rel="apple-touch-icon" href="%PUBLIC_URL%/apple-touch-icon.png">
+
+    <!-- Safari pinned tab（単色SVG + ブランド色） -->
+    <link rel="mask-icon" href="%PUBLIC_URL%/mask-icon.svg" color="#D7B56D">
     <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
 
 <!-- inside <head> -->
