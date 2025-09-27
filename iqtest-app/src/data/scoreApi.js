@@ -25,14 +25,10 @@ export const validateScorePayload = ({ nickname, score, difficulty, iq }) => {
   if (!Number.isFinite(iqNumber)) {
     throw new Error('invalid iq');
   }
-
-  return {
-    nickname: cleanNickname,
-    score,
-    difficulty,
-    iq: iqNumber,
-  };
+  return { nickname: cleanNickname, score, difficulty, iq: iqNumber };
 };
+
+const docIdFor = (uid, difficulty) => `${uid}_${difficulty}`;
 
 export async function saveScore({ nickname, score, difficulty, iq, now = serverTimestamp() }) {
   const { nickname: cleanNickname, score: validScore, difficulty: validDifficulty, iq: validIq } =
@@ -44,11 +40,12 @@ export async function saveScore({ nickname, score, difficulty, iq, now = serverT
     throw new Error('not signed in');
   }
 
-  const ref = doc(db, 'scores', uid);
+  const ref = doc(db, 'scores', docIdFor(uid, validDifficulty));
   const snapshot = await getDoc(ref);
   const existed = snapshot.exists();
 
   const payload = {
+    uid,
     nickname: cleanNickname,
     score: validScore,
     difficulty: validDifficulty,
