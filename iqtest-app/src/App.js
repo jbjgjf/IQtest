@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
-import { parseCell, shuffleArray } from './questions';
+import { parseCell } from './questions';
 import MatrixItem, { MatrixCellThumb } from './components/MatrixItem';
 import Leaderboard from './components/Leaderboard';
 import { Analytics } from '@vercel/analytics/react';
-import { loadPacks } from './data/loader';
+import { generatePack } from './utils/generateQuestions';
+import { mulberry32, hashStringToSeed } from './utils/prng';
 import {
   generateMatrixCell,
   mutateCell,
@@ -27,22 +28,52 @@ if (typeof window !== 'undefined' && analytics) {
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-const erf = (x) => {
-  const sign = x < 0 ? -1 : 1;
-  const absX = Math.abs(x);
-  const t = 1 / (1 + 0.3275911 * absX);
-  const a1 = 0.254829592;
-  const a2 = -0.284496736;
-  const a3 = 1.421413741;
-  const a4 = -1.453152027;
-  const a5 = 1.061405429;
-  const poly = (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t;
-  const expTerm = Math.exp(-absX * absX);
-  const result = 1 - poly * expTerm;
-  return sign * result;
+const IQ_NORMS = {
+  easy: { mean: 22, sd: 4 },
+  medium: { mean: 16, sd: 5 },
+  hard: { mean: 10, sd: 5 },
+  mixed: { mean: 16, sd: 5 },
 };
 
-const normCdf = (x) => 0.5 * (1 + erf(x / Math.SQRT2));
+const LANGUAGE_OPTIONS = [
+  { value: 'ja', label: 'JA' },
+  { value: 'en', label: 'EN' },
+  { value: 'zh', label: 'ZH' },
+];
+
+const LANGUAGE_TITLES = {
+  ja: 'ミニIQテスト（デモ）',
+  en: 'Mini IQ Test (Demo)',
+  zh: '迷你 IQ 測試（示範）',
+};
+
+const INTRO_COPY = {
+  ja: {
+    heading: 'Nested-Orbits IQ Mini',
+    body: '非言語30問で推定IQの傾向をサクッとチェック。匿名で挑戦できます。',
+    cta: 'スタート',
+  },
+  en: {
+    heading: 'Nested-Orbits IQ Mini',
+    body: 'Estimate your IQ tendency with 30 non-verbal pattern questions. No sign-up required.',
+    cta: 'Start',
+  },
+  zh: {
+    heading: 'Nested-Orbits IQ Mini',
+    body: '30 道非語言圖形題，快速掌握 IQ 傾向，無需登入即可作答。',
+    cta: '開始',
+  },
+};
+
+const estimateIQPoint = (rawCorrect, total, difficulty) => {
+  const { mean, sd } = IQ_NORMS[difficulty] || IQ_NORMS.mixed;
+  const correct = Number.isFinite(rawCorrect) ? rawCorrect : 0;
+  const denominator = sd > 0 ? sd : 1;
+  const z = (correct - mean) / denominator;
+  const iq = 100 + 15 * z;
+  const iqClamped = clamp(iq, 55, 145);
+  return Math.round(iqClamped * 10) / 10;
+};
 
 const toFiniteNumber = (value, fallback) => {
   const num = Number(value);
@@ -51,11 +82,7 @@ const toFiniteNumber = (value, fallback) => {
 
 const DEFAULT_QUESTION_TIME = 30;
 const DIFFICULTY_ORDER = ['easy', 'medium', 'hard'];
-const DEFAULT_DIFFICULTY_TARGETS = { easy: 4, medium: 5, hard: 3 };
-const DEFAULT_TOTAL_QUESTIONS = Object.values(DEFAULT_DIFFICULTY_TARGETS).reduce(
-  (sum, count) => sum + count,
-  0
-);
+const ALLOWED_DIFFICULTIES = ['easy', 'medium', 'hard', 'mixed'];
 
 const normalizeDifficulty = (value) => {
   if (!value) return 'medium';
@@ -67,67 +94,6 @@ const getQuestionTimeLimit = (question) => {
   if (!question) return DEFAULT_QUESTION_TIME;
   const limit = toFiniteNumber(question.timeLimitSec, null);
   return limit ?? DEFAULT_QUESTION_TIME;
-};
-
-const selectQuestionsByDifficulty = (allQuestions, targets = DEFAULT_DIFFICULTY_TARGETS) => {
-  if (!Array.isArray(allQuestions) || allQuestions.length === 0) {
-    return [];
-  }
-
-  const desiredTotalRaw = Object.values(targets ?? {}).reduce((sum, value) => {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? sum + numeric : sum;
-  }, 0);
-  const desiredTotal = desiredTotalRaw > 0 ? desiredTotalRaw : DEFAULT_TOTAL_QUESTIONS;
-  const limit = Math.min(desiredTotal, allQuestions.length);
-
-  const shuffledAll = shuffleArray(allQuestions);
-  const buckets = DIFFICULTY_ORDER.reduce((acc, diff) => {
-    acc[diff] = [];
-    return acc;
-  }, {});
-
-  shuffledAll.forEach((question) => {
-    const diff = normalizeDifficulty(question.difficulty);
-    buckets[diff].push(question);
-  });
-
-  const selections = [];
-  const seenKeys = new Set();
-  const makeKey = (question) => `${question._pack ?? 'pack'}::${question.id ?? question.text ?? Math.random().toString(36)}`;
-  const addQuestion = (question) => {
-    if (!question) return false;
-    const key = makeKey(question);
-    if (seenKeys.has(key)) return false;
-    seenKeys.add(key);
-    selections.push(question);
-    return true;
-  };
-
-  DIFFICULTY_ORDER.forEach((diff) => {
-    const targetCount = Number(targets?.[diff]) || 0;
-    const bucket = buckets[diff] ?? [];
-    let taken = 0;
-    for (let i = 0; i < bucket.length && taken < targetCount; i += 1) {
-      if (addQuestion(bucket[i])) {
-        taken += 1;
-      }
-    }
-  });
-
-  for (let i = 0; i < shuffledAll.length && selections.length < limit; i += 1) {
-    addQuestion(shuffledAll[i]);
-  }
-
-  if (selections.length < limit) {
-    shuffledAll.forEach((question) => {
-      if (selections.length < limit) {
-        addQuestion(question);
-      }
-    });
-  }
-
-  return shuffleArray(selections);
 };
 
 const isPrimitiveOption = (value) => typeof value === 'number' || typeof value === 'string';
@@ -381,16 +347,104 @@ function App() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [lastResult, setLastResult] = useState(null);
   const [sharedResult, setSharedResult] = useState(null);
+  const [language, setLanguage] = useState(() => {
+    if (typeof window === 'undefined') return 'ja';
+    return window.localStorage.getItem('iq:language') || 'ja';
+  });
+  const [showIntro, setShowIntro] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return !window.localStorage.getItem('iq:introSeen');
+  });
+  const [theme, setTheme] = useState(() => {
+    if (typeof window === 'undefined') return 'navy';
+    return window.localStorage.getItem('iq:theme') || 'navy';
+  });
   const [toastMessage, setToastMessage] = useState('');
   const [nickname, setNickname] = useState('');
   const [submittingScore, setSubmittingScore] = useState(false);
   const [submitMsg, setSubmitMsg] = useState('');
   const [scoreSent, setScoreSent] = useState(false);
+  const [difficulty, setDifficulty] = useState('mixed');
+  const [seedInput, setSeedInput] = useState('');
+  const [seedActive, setSeedActive] = useState(null);
+  const difficultyOptions = useMemo(
+    () => [
+      { value: 'easy', label: 'Easy' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'hard', label: 'Hard' },
+      { value: 'mixed', label: 'Mixed' },
+    ],
+    []
+  );
 
   const intervalRef = useRef(null);
   const feedbackTimeoutRef = useRef(null);
   const toastTimeoutRef = useRef(null);
   const optionRefs = useRef([]);
+  const questionsRef = useRef(questions);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('iq:language', language);
+  }, [language]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    root.dataset.theme = theme;
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('iq:theme', theme);
+    }
+    try {
+      const computed = getComputedStyle(root).getPropertyValue('--bg').trim() || '#0B132B';
+      let meta = document.querySelector('meta[name="theme-color"]');
+      if (!meta) {
+        meta = document.createElement('meta');
+        meta.setAttribute('name', 'theme-color');
+        document.head.appendChild(meta);
+      }
+      meta.setAttribute('content', computed || '#0B132B');
+    } catch (error) {
+      // noop
+    }
+  }, [theme]);
+
+  const titleText = useMemo(() => LANGUAGE_TITLES[language] || LANGUAGE_TITLES.ja, [language]);
+  const introContent = useMemo(() => INTRO_COPY[language] || INTRO_COPY.ja, [language]);
+
+  const handleLanguageChange = useCallback((nextLang) => {
+    if (!LANGUAGE_OPTIONS.some((option) => option.value === nextLang)) {
+      return;
+    }
+    setLanguage(nextLang);
+  }, []);
+
+  const renderLanguageSwitch = useCallback(
+    (extraClass = '') => (
+      <div
+        className={`language-switch ${extraClass}`.trim()}
+        role="group"
+        aria-label="Language selection"
+      >
+        {LANGUAGE_OPTIONS.map(({ value, label }) => (
+          <button
+            key={value}
+            type="button"
+            className={`btn ${language === value ? 'primary' : 'ghost'}`.trim()}
+            onClick={() => handleLanguageChange(value)}
+            aria-pressed={language === value}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    ),
+    [handleLanguageChange, language]
+  );
+
+  const handleThemeChange = useCallback((event) => {
+    setTheme(event.target.value);
+  }, []);
 
   const total = questions.length;
   const currentQuestion = questions[current];
@@ -439,6 +493,10 @@ function App() {
     return filtered;
   }, [currentKind, shuffledOptions, currentQuestion?.id]);
 
+  useEffect(() => {
+    questionsRef.current = questions;
+  }, [questions]);
+
   const stopTimer = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -453,46 +511,170 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    setIsLoading(true);
-    loadPacks(['arithmetic.v1', 'matrix.v1'])
-      .then((loadedQuestions) => {
-        if (cancelled) return;
-        const normalized = loadedQuestions
+  const buildRng = useCallback((seedValue) => {
+    if (!seedValue) {
+      return Math.random;
+    }
+    return mulberry32(hashStringToSeed(seedValue));
+  }, []);
+
+  const updateUrl = useCallback((seedValue, difficultyValue) => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (seedValue) {
+      params.set('seed', seedValue);
+    } else {
+      params.delete('seed');
+    }
+    if (difficultyValue && difficultyValue !== 'mixed') {
+      params.set('difficulty', difficultyValue);
+    } else {
+      params.delete('difficulty');
+    }
+    const query = params.toString();
+    const nextUrl = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
+    window.history.replaceState(null, '', nextUrl);
+  }, []);
+
+  const resetToQuestions = useCallback((nextQuestions) => {
+    const hasNext = Array.isArray(nextQuestions);
+    const target = hasNext ? nextQuestions : questionsRef.current || [];
+    stopTimer();
+    clearFeedbackTimeout();
+    const firstQuestion = target[0];
+    questionsRef.current = target;
+    if (hasNext) {
+      setQuestions(nextQuestions);
+    }
+    setCurrent(0);
+    setScore(0);
+    setFinished(false);
+    setRemaining(getQuestionTimeLimit(firstQuestion));
+    setFeedback(null);
+    setSelectedOption(null);
+    setAnswerLocked(false);
+    setElapsedSeconds(0);
+    const firstOptions = firstQuestion?.options;
+    setShuffledOptions(Array.isArray(firstOptions) ? [...firstOptions] : []);
+    setToastMessage('');
+    setNickname('');
+    setSubmitMsg('');
+    setSubmittingScore(false);
+    setScoreSent(false);
+  }, [clearFeedbackTimeout, stopTimer]);
+
+  const handleIntroStart = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('iq:introSeen', '1');
+    }
+    resetToQuestions();
+    setShowIntro(false);
+  }, [resetToQuestions]);
+
+  const regenerate = useCallback(
+    ({ seed = seedActive, difficulty: mode = difficulty } = {}) => {
+      setIsLoading(true);
+      try {
+        const rng = buildRng(seed);
+        const mix = mode === 'mixed';
+        // const pack = generatePack(30, true); // easy/medium/hard 混合
+        // const pack = generatePack(10, false, 'hard', { rng }); // ハードのみ
+        const pack = generatePack(30, mix, mode, { rng });
+        const normalized = pack.questions
           .map((question) => normalizeQuestion(question))
           .filter(Boolean);
-        const selected = selectQuestionsByDifficulty(normalized, DEFAULT_DIFFICULTY_TARGETS);
-        setQuestions(selected);
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          console.error(error);
-          setQuestions([]);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
+        resetToQuestions(normalized);
+      } catch (error) {
+        console.error(error);
+        resetToQuestions([]);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [buildRng, difficulty, seedActive, resetToQuestions]
+  );
+
+  const handleDifficultyChange = useCallback(
+    (nextDifficulty) => {
+      if (!ALLOWED_DIFFICULTIES.includes(nextDifficulty)) {
+        return;
+      }
+      setLastResult(null);
+      setDifficulty(nextDifficulty);
+      updateUrl(seedActive, nextDifficulty);
+      regenerate({ difficulty: nextDifficulty });
+    },
+    [regenerate, seedActive, updateUrl]
+  );
+
+  const handleSeedSubmit = useCallback(
+    (event) => {
+      event.preventDefault();
+      const trimmed = seedInput.trim();
+      const nextSeed = trimmed.length > 0 ? trimmed : null;
+      setSeedInput(trimmed);
+      setSeedActive(nextSeed);
+      updateUrl(nextSeed, difficulty);
+      regenerate({ seed: nextSeed });
+    },
+    [difficulty, regenerate, seedInput, updateUrl]
+  );
+
+  const handleSeedInputChange = (event) => {
+    setSeedInput(event.target.value);
+  };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      regenerate();
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const seedParam = params.get('seed');
+    const diffParam = params.get('difficulty');
+    const normalizedDifficulty = diffParam && ALLOWED_DIFFICULTIES.includes(diffParam.toLowerCase())
+      ? diffParam.toLowerCase()
+      : 'mixed';
+
+    setSeedInput(seedParam ?? '');
+    setSeedActive(seedParam ?? null);
+    setDifficulty(normalizedDifficulty);
+    regenerate({ seed: seedParam ?? null, difficulty: normalizedDifficulty });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
-      const stored = window.localStorage.getItem('iqtest:last');
+      const stored = window.localStorage.getItem(`lastRun:${difficulty}`);
       if (stored) {
-        const parsed = JSON.parse(stored);
-        setLastResult(parsed);
+        const parsed = JSON.parse(stored) || {};
+        let correct = Number(parsed.correct);
+        if (!Number.isFinite(correct) && Number.isFinite(parsed.score)) {
+          correct = Number(parsed.score);
+        }
+        if (!Number.isFinite(correct)) {
+          correct = 0;
+        }
+        const totalValue = Number(parsed.total);
+        const total = Number.isFinite(totalValue) ? totalValue : 0;
+        const iqValue = Number.isFinite(parsed.iq)
+          ? Number(parsed.iq)
+          : estimateIQPoint(correct, total, difficulty);
+        setLastResult({
+          correct,
+          total,
+          timeMs: Number.isFinite(parsed.timeMs) ? parsed.timeMs : null,
+          iq: iqValue,
+          atISO: parsed.atISO,
+        });
+      } else {
+        setLastResult(null);
       }
     } catch (error) {
-      // noop: localStorage unavailable or corrupted data
+      setLastResult(null);
     }
-  }, []);
+  }, [difficulty]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -527,9 +709,15 @@ function App() {
     const s = params.get('s');
     const t = params.get('t');
     const iq = params.get('iq');
-    const p = params.get('p');
-    if (s && t && iq && p) {
-      setSharedResult({ score: s, total: t, iqRange: iq, percentile: p });
+    if (s && t && iq) {
+      const scoreValue = Number(s);
+      const totalValue = Number(t);
+      const iqValue = Number(iq);
+      setSharedResult({
+        score: Number.isFinite(scoreValue) ? scoreValue : s,
+        total: Number.isFinite(totalValue) ? totalValue : t,
+        iq: Number.isFinite(iqValue) ? iqValue : iq,
+      });
     }
   }, []);
 
@@ -564,7 +752,7 @@ function App() {
     setSelectedOption(null);
     setAnswerLocked(false);
     setFeedback(null);
-    setShuffledOptions(shuffleArray(currentQuestion.options));
+    setShuffledOptions([...currentQuestion.options]);
   }, [currentQuestion?.id, finished]);
 
   useEffect(() => () => {
@@ -669,25 +857,9 @@ function App() {
     }
   };
 
-  const reset = () => {
-    stopTimer();
-    clearFeedbackTimeout();
-    setCurrent(0);
-    setScore(0);
-    setFinished(false);
-    setRemaining(getQuestionTimeLimit(questions[0]));
-    setFeedback(null);
-    setSelectedOption(null);
-    setAnswerLocked(false);
-    setElapsedSeconds(0);
-    const firstOptions = questions[0]?.options;
-    setShuffledOptions(Array.isArray(firstOptions) ? shuffleArray(firstOptions) : []);
-    setToastMessage('');
-    setNickname('');
-    setSubmitMsg('');
-    setSubmittingScore(false);
-    setScoreSent(false);
-  };
+  const reset = useCallback(() => {
+    resetToQuestions();
+  }, [resetToQuestions]);
 
   const ratio = total > 0 ? score / total : 0;
   let resultClass = 'result-average';
@@ -701,47 +873,37 @@ function App() {
   }
 
   const totalSeconds = elapsedSeconds;
-  const expectedTotal = questions.reduce(
-    (sum, question) => sum + getQuestionTimeLimit(question),
-    0
-  ) || DEFAULT_QUESTION_TIME;
-  const accuracyFactor = ratio * 2 - 1;
-  const rawTimeFactor = 1.0 + (0.5 - (expectedTotal ? totalSeconds / expectedTotal : 0)) * 0.15;
-  const timeFactor = clamp(rawTimeFactor, 0.85, 1.15);
-  const zApprox = clamp(accuracyFactor * 0.9 * timeFactor, -3, 3);
-  const estimatedIQ = Math.round(100 + 15 * zApprox);
-  const iqLow = estimatedIQ - 5;
-  const iqHigh = estimatedIQ + 5;
-  const percentile = clamp(Math.round(100 * (1 - normCdf(zApprox))), 0, 100);
+  const iqPoint = useMemo(
+    () => estimateIQPoint(score, total, difficulty),
+    [score, total, difficulty]
+  );
 
   useEffect(() => {
     if (!finished) return;
     if (typeof window === 'undefined') return;
-    const iqRange = `${iqLow}–${iqHigh}`;
-    const payload = {
-      score,
+    const record = {
+      correct: score,
       total,
-      z: zApprox,
-      IQrange: iqRange,
-      percentile,
-      elapsedSeconds: totalSeconds,
-      timestamp: Date.now(),
+      timeMs: Math.round(totalSeconds * 1000),
+      iq: iqPoint,
+      atISO: new Date().toISOString(),
+      difficulty,
     };
     try {
-      window.localStorage.setItem('iqtest:last', JSON.stringify(payload));
-      setLastResult(payload);
+      window.localStorage.setItem(`lastRun:${difficulty}`, JSON.stringify(record));
+      setLastResult(record);
     } catch (error) {
       // noop: storage might be disabled
     }
-  }, [finished, score, total, zApprox, iqLow, iqHigh, percentile, totalSeconds]);
+  }, [finished, score, total, totalSeconds, iqPoint, difficulty]);
 
   const handleShare = async () => {
     if (!finished || typeof window === 'undefined') return;
+    const iqShare = Number.isFinite(iqPoint) ? iqPoint.toFixed(1) : String(iqPoint);
     const params = new URLSearchParams({
       s: String(score),
       t: String(total),
-      iq: `${iqLow}–${iqHigh}`,
-      p: String(percentile),
+      iq: iqShare,
     });
     const shareUrl = `${window.location.origin}${window.location.pathname}?${params.toString()}`;
 
@@ -787,10 +949,10 @@ function App() {
 
     setSubmittingScore(true);
     try {
-      const result = await saveScore({ nickname: name, score });
+      const result = await saveScore({ nickname: name, score, difficulty, iq: iqPoint });
       setNickname(name);
       setScoreSent(true);
-      const message = result?.updated
+      const message = result?.existed
         ? 'ランキングを更新しました！'
         : 'スコアを送信しました！';
       setSubmitMsg(message);
@@ -802,6 +964,10 @@ function App() {
         message = 'ニックネームは1〜24文字で入力してください';
       } else if (error?.message === 'invalid score') {
         message = 'スコアが正しくありません';
+      } else if (error?.message === 'invalid difficulty') {
+        message = '難易度の判定に失敗しました';
+      } else if (error?.message === 'invalid iq') {
+        message = 'IQの算出に失敗しました';
       } else if (error?.message === 'not signed in') {
         message = '通信状況を確認して再度お試しください';
       }
@@ -823,7 +989,25 @@ function App() {
       <div className="app">
         <div className="wrap">
           <header className="header">
-            <h1 className="title">ミニIQテスト（デモ）</h1>
+          <div className="brand-row">
+            <div className="brand-identity">
+              <img src="/logo.svg" alt="IQtest Mini logo" className="brand-logo" />
+              <h1 className="title">{titleText}</h1>
+            </div>
+            <div className="header-controls">
+              {renderLanguageSwitch('language-switch-header')}
+              <select
+                className="theme-select"
+                value={theme}
+                onChange={handleThemeChange}
+                aria-label="Theme selection"
+              >
+                <option value="navy">Navy</option>
+                <option value="royal">Royal</option>
+                <option value="emerald">Emerald</option>
+              </select>
+            </div>
+          </div>
           </header>
           <p className="note">読み込み中…</p>
         </div>
@@ -837,7 +1021,25 @@ function App() {
       <div className="app">
         <div className="wrap">
           <header className="header">
-            <h1 className="title">ミニIQテスト（デモ）</h1>
+          <div className="brand-row">
+            <div className="brand-identity">
+              <img src="/logo.svg" alt="IQtest Mini logo" className="brand-logo" />
+              <h1 className="title">{titleText}</h1>
+            </div>
+            <div className="header-controls">
+              {renderLanguageSwitch('language-switch-header')}
+              <select
+                className="theme-select"
+                value={theme}
+                onChange={handleThemeChange}
+                aria-label="Theme selection"
+              >
+                <option value="navy">Navy</option>
+                <option value="royal">Royal</option>
+                <option value="emerald">Emerald</option>
+              </select>
+            </div>
+          </div>
           </header>
           <p className="note">問題データを読み込めませんでした。</p>
         </div>
@@ -848,18 +1050,107 @@ function App() {
 
   return (
     <div className="app">
+      {showIntro && (
+        <div className="intro-overlay" role="dialog" aria-modal="true">
+          <div className="intro-card">
+            <img src="/logo.svg" alt="IQtest Mini logo" className="intro-logo" />
+            {renderLanguageSwitch('language-switch-intro')}
+            <select
+              className="theme-select intro-theme-select"
+              value={theme}
+              onChange={handleThemeChange}
+              aria-label="Theme selection"
+            >
+              <option value="navy">Navy</option>
+              <option value="royal">Royal</option>
+              <option value="emerald">Emerald</option>
+            </select>
+            <h2 className="intro-title">{introContent.heading}</h2>
+            <p className="intro-text">{introContent.body}</p>
+            <div className="intro-actions">
+              <button type="button" className="btn primary" onClick={handleIntroStart}>
+                {introContent.cta}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="wrap">
         <header className="header">
-          <h1 className="title">ミニIQテスト（デモ）</h1>
+          <div className="brand-row">
+            <div className="brand-identity">
+              <img src="/logo.svg" alt="IQtest Mini logo" className="brand-logo" />
+              <h1 className="title">{titleText}</h1>
+            </div>
+            <div className="header-controls">
+              {renderLanguageSwitch('language-switch-header')}
+              <select
+                className="theme-select"
+                value={theme}
+                onChange={handleThemeChange}
+                aria-label="Theme selection"
+              >
+                <option value="navy">Navy</option>
+                <option value="royal">Royal</option>
+                <option value="emerald">Emerald</option>
+              </select>
+            </div>
+          </div>
           <div className="pills">
             <span className="pill">非言語・数列</span>
             <span className="pill">合計 {total} 問</span>
           </div>
         </header>
 
+        <div
+          className="generator-controls"
+          style={{
+            marginTop: 12,
+            display: 'flex',
+            gap: 12,
+            flexWrap: 'wrap',
+            alignItems: 'center',
+          }}
+        >
+          <div
+            role="group"
+            aria-label="難易度"
+            style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}
+          >
+            {difficultyOptions.map(({ value, label }) => (
+              <button
+                key={value}
+                type="button"
+                className={`btn ${difficulty === value ? 'primary' : 'ghost'}`.trim()}
+                onClick={() => handleDifficultyChange(value)}
+                aria-pressed={difficulty === value}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <form
+            onSubmit={handleSeedSubmit}
+            style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}
+          >
+            <input
+              id="seed-input"
+              type="text"
+              value={seedInput}
+              onChange={handleSeedInputChange}
+              placeholder="Seed"
+              aria-label="Seed"
+              style={{ padding: '6px 8px', minWidth: 120 }}
+            />
+            <button type="submit" className="btn ghost">
+              適用
+            </button>
+          </form>
+        </div>
+
         {lastResult && (
           <p className="note previous-result">
-            前回: {lastResult.score}/{lastResult.total}（推定IQ: {lastResult.IQrange}・上位{lastResult.percentile}%）
+            前回: {lastResult.correct}/{lastResult.total}（推定IQ: {Number.isFinite(Number(lastResult.iq)) ? Number(lastResult.iq).toFixed(1) : '--'}）
           </p>
         )}
 
@@ -875,7 +1166,7 @@ function App() {
             </button>
             <div className="score">共有された結果</div>
             <p className="note">
-              {sharedResult.score}/{sharedResult.total}（推定IQ: {sharedResult.iqRange}・上位{sharedResult.percentile}%）
+              {sharedResult.score}/{sharedResult.total}（推定IQ: {Number.isFinite(Number(sharedResult.iq)) ? Number(sharedResult.iq).toFixed(1) : '--'}）
             </p>
           </div>
         )}
@@ -945,8 +1236,7 @@ function App() {
         ) : (
           <div className={`card center result ${resultClass}`}>
             <div className="score">あなたのスコア: {score}/{total}</div>
-            <p className="result-iq">推定IQ: {iqLow}–{iqHigh}</p>
-            <p className="note">推定上位 {percentile}%（簡易オフライン換算）</p>
+            <p className="result-iq">推定IQ: {Number.isFinite(iqPoint) ? iqPoint.toFixed(1) : '--'}</p>
             <p className="note result-message">{resultMessage}</p>
             <p className="note">※ 本デモは練習用です。正式なIQ検査とは異なります。</p>
             <div style={{ marginTop: 16 }}>
