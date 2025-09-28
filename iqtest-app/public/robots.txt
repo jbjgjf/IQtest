@@ -1,3 +1,4 @@
 User-agent: *
 Allow: /
-Sitemap: https://iqtest-nu.vercel.app/sitemap.xml
+
+Sitemap: https://i-qtest-nu.vercel.app/sitemap.xml
