@@ -3,6 +3,8 @@ import './App.css';
 import { parseCell } from './questions';
 import MatrixItem, { MatrixCellThumb } from './components/MatrixItem';
 import Leaderboard from './components/Leaderboard';
+import OnboardingDialog from './components/OnboardingDialog';
+import { STRINGS } from './i18n/strings';
 import { Analytics } from '@vercel/analytics/react';
 import { generatePack } from './utils/generateQuestions';
 import { mulberry32, hashStringToSeed } from './utils/prng';
@@ -47,24 +49,6 @@ const LANGUAGE_TITLES = {
   zh: '迷你 IQ 測試（示範）',
 };
 
-const INTRO_COPY = {
-  ja: {
-    heading: 'Nested-Orbits IQ Mini',
-    body: '非言語30問で推定IQの傾向をサクッとチェック。匿名で挑戦できます。',
-    cta: 'スタート',
-  },
-  en: {
-    heading: 'Nested-Orbits IQ Mini',
-    body: 'Estimate your IQ tendency with 30 non-verbal pattern questions. No sign-up required.',
-    cta: 'Start',
-  },
-  zh: {
-    heading: 'Nested-Orbits IQ Mini',
-    body: '30 道非語言圖形題，快速掌握 IQ 傾向，無需登入即可作答。',
-    cta: '開始',
-  },
-};
-
 const estimateIQPoint = (rawCorrect, total, difficulty) => {
   const { mean, sd } = IQ_NORMS[difficulty] || IQ_NORMS.mixed;
   const correct = Number.isFinite(rawCorrect) ? rawCorrect : 0;
@@ -94,6 +78,13 @@ const getQuestionTimeLimit = (question) => {
   if (!question) return DEFAULT_QUESTION_TIME;
   const limit = toFiniteNumber(question.timeLimitSec, null);
   return limit ?? DEFAULT_QUESTION_TIME;
+};
+
+const getByPath = (source, path) => {
+  if (!source || typeof path !== 'string') return undefined;
+  return path.split('.').reduce((acc, key) => (
+    acc && Object.prototype.hasOwnProperty.call(acc, key) ? acc[key] : undefined
+  ), source);
 };
 
 const isPrimitiveOption = (value) => typeof value === 'number' || typeof value === 'string';
@@ -351,10 +342,18 @@ function App() {
     if (typeof window === 'undefined') return 'ja';
     return window.localStorage.getItem('iq:language') || 'ja';
   });
-  const [showIntro, setShowIntro] = useState(() => {
+  const [hasDismissedOnboarding, setHasDismissedOnboarding] = useState(() => {
     if (typeof window === 'undefined') return false;
-    return !window.localStorage.getItem('iq:introSeen');
+    const dismissed = window.localStorage.getItem('onboarding:dismissed') === 'true';
+    const legacy = window.localStorage.getItem('iq:introSeen');
+    return dismissed || Boolean(legacy);
   });
+  const [forceIntro, setForceIntro] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('intro') === '1';
+  });
+  const [openOnboarding, setOpenOnboarding] = useState(false);
   const [theme, setTheme] = useState(() => {
     if (typeof window === 'undefined') return 'navy';
     return window.localStorage.getItem('iq:theme') || 'navy';
@@ -367,6 +366,7 @@ function App() {
   const [difficulty, setDifficulty] = useState('mixed');
   const [seedInput, setSeedInput] = useState('');
   const [seedActive, setSeedActive] = useState(null);
+  const [isPractice, setIsPractice] = useState(false);
   const difficultyOptions = useMemo(
     () => [
       { value: 'easy', label: 'Easy' },
@@ -382,6 +382,24 @@ function App() {
   const toastTimeoutRef = useRef(null);
   const optionRefs = useRef([]);
   const questionsRef = useRef(questions);
+  const onboardingInitRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const legacy = window.localStorage.getItem('iq:introSeen');
+    if (legacy && window.localStorage.getItem('onboarding:dismissed') !== 'true') {
+      window.localStorage.setItem('onboarding:dismissed', 'true');
+      setHasDismissedOnboarding(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (onboardingInitRef.current) return;
+    if (forceIntro || !hasDismissedOnboarding) {
+      setOpenOnboarding(true);
+    }
+    onboardingInitRef.current = true;
+  }, [forceIntro, hasDismissedOnboarding]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -410,7 +428,11 @@ function App() {
   }, [theme]);
 
   const titleText = useMemo(() => LANGUAGE_TITLES[language] || LANGUAGE_TITLES.ja, [language]);
-  const introContent = useMemo(() => INTRO_COPY[language] || INTRO_COPY.ja, [language]);
+  const strings = useMemo(() => STRINGS[language] || STRINGS.ja || {}, [language]);
+  const t = useCallback((path, fallback) => {
+    const value = getByPath(strings, path);
+    return value !== undefined ? value : fallback;
+  }, [strings]);
 
   const handleLanguageChange = useCallback((nextLang) => {
     if (!LANGUAGE_OPTIONS.some((option) => option.value === nextLang)) {
@@ -421,30 +443,26 @@ function App() {
 
   const renderLanguageSwitch = useCallback(
     (extraClass = '') => (
-      <div
-        className={`language-switch ${extraClass}`.trim()}
-        role="group"
-        aria-label="Language selection"
-      >
-        {LANGUAGE_OPTIONS.map(({ value, label }) => (
-          <button
-            key={value}
-            type="button"
-            className={`btn ${language === value ? 'primary' : 'ghost'}`.trim()}
-            onClick={() => handleLanguageChange(value)}
-            aria-pressed={language === value}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+            <div
+              className={`language-switch ${extraClass}`.trim()}
+              role="group"
+              aria-label="Language selection"
+            >
+              {LANGUAGE_OPTIONS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`chip ${language === value ? 'primary' : 'ghost'}`.trim()}
+                  onClick={() => handleLanguageChange(value)}
+                  aria-pressed={language === value}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
     ),
     [handleLanguageChange, language]
   );
-
-  const handleThemeChange = useCallback((event) => {
-    setTheme(event.target.value);
-  }, []);
 
   const total = questions.length;
   const currentQuestion = questions[current];
@@ -563,26 +581,22 @@ function App() {
     setScoreSent(false);
   }, [clearFeedbackTimeout, stopTimer]);
 
-  const handleIntroStart = useCallback(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('iq:introSeen', '1');
-    }
-    resetToQuestions();
-    setShowIntro(false);
-  }, [resetToQuestions]);
-
-  const regenerate = useCallback(
-    ({ seed = seedActive, difficulty: mode = difficulty } = {}) => {
+  const createPackAndStart = useCallback(
+    ({ count = 30, seedOverride, difficultyOverride } = {}) => {
+      const targetSeed = seedOverride !== undefined ? seedOverride : seedActive;
+      const targetDifficulty = difficultyOverride || difficulty;
       setIsLoading(true);
       try {
-        const rng = buildRng(seed);
-        const mix = mode === 'mixed';
-        // const pack = generatePack(30, true); // easy/medium/hard 混合
-        // const pack = generatePack(10, false, 'hard', { rng }); // ハードのみ
-        const pack = generatePack(30, mix, mode, { rng });
+        const rng = buildRng(targetSeed);
+        const mix = targetDifficulty === 'mixed' && count > 1;
+        const pack = generatePack(count, mix, targetDifficulty, { rng });
         const normalized = pack.questions
           .map((question) => normalizeQuestion(question))
           .filter(Boolean);
+        if (seedOverride !== undefined) {
+          setSeedActive(targetSeed);
+          setSeedInput(targetSeed ?? '');
+        }
         resetToQuestions(normalized);
       } catch (error) {
         console.error(error);
@@ -591,7 +605,63 @@ function App() {
         setIsLoading(false);
       }
     },
-    [buildRng, difficulty, seedActive, resetToQuestions]
+    [buildRng, difficulty, resetToQuestions, seedActive]
+  );
+
+  const handleOnboardingStart = useCallback(({ dontShowAgain } = {}) => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('iq:introSeen', '1');
+      if (dontShowAgain && !forceIntro) {
+        window.localStorage.setItem('onboarding:dismissed', 'true');
+        setHasDismissedOnboarding(true);
+      } else if (!dontShowAgain && !forceIntro && hasDismissedOnboarding) {
+        window.localStorage.removeItem('onboarding:dismissed');
+        setHasDismissedOnboarding(false);
+      }
+    }
+    setIsPractice(false);
+    resetToQuestions();
+    setOpenOnboarding(false);
+    if (forceIntro) {
+      setForceIntro(false);
+    }
+  }, [forceIntro, hasDismissedOnboarding, resetToQuestions]);
+
+  const handleOnboardingClose = useCallback(() => {
+    setOpenOnboarding(false);
+    if (forceIntro) {
+      setForceIntro(false);
+    }
+  }, [forceIntro]);
+
+  const handlePracticeStart = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('iq:introSeen', '1');
+    }
+    setIsPractice(true);
+    createPackAndStart({ count: 1 });
+    setOpenOnboarding(false);
+    if (forceIntro) {
+      setForceIntro(false);
+    }
+  }, [createPackAndStart, forceIntro]);
+
+  const regenerate = useCallback(
+    ({ seed, difficulty: mode } = {}) => {
+      const hasSeedOverride = seed !== undefined;
+      const hasDifficultyOverride = mode !== undefined;
+      const normalizedDifficulty = hasDifficultyOverride
+        ? (ALLOWED_DIFFICULTIES.includes(mode) ? mode : difficulty)
+        : undefined;
+      const normalizedSeed = hasSeedOverride ? (seed ?? null) : undefined;
+      setIsPractice(false);
+      createPackAndStart({
+        count: 30,
+        seedOverride: normalizedSeed,
+        difficultyOverride: normalizedDifficulty,
+      });
+    },
+    [createPackAndStart, difficulty]
   );
 
   const handleDifficultyChange = useCallback(
@@ -607,18 +677,23 @@ function App() {
     [regenerate, seedActive, updateUrl]
   );
 
-  const handleSeedSubmit = useCallback(
-    (event) => {
-      event.preventDefault();
-      const trimmed = seedInput.trim();
-      const nextSeed = trimmed.length > 0 ? trimmed : null;
-      setSeedInput(trimmed);
-      setSeedActive(nextSeed);
-      updateUrl(nextSeed, difficulty);
-      regenerate({ seed: nextSeed });
-    },
-    [difficulty, regenerate, seedInput, updateUrl]
-  );
+  const applySeed = useCallback((rawValue) => {
+    const trimmed = (rawValue ?? '').trim();
+    const nextSeed = trimmed.length > 0 ? trimmed : null;
+    setSeedInput(trimmed);
+    setSeedActive(nextSeed);
+    updateUrl(nextSeed, difficulty);
+    regenerate({ seed: nextSeed });
+  }, [difficulty, regenerate, updateUrl]);
+
+  const handleApplySeedFromDialog = useCallback(() => {
+    applySeed(seedInput);
+  }, [applySeed, seedInput]);
+
+  const handleSeedSubmit = useCallback((event) => {
+    event.preventDefault();
+    applySeed(seedInput);
+  }, [applySeed, seedInput]);
 
   const handleSeedInputChange = (event) => {
     setSeedInput(event.target.value);
@@ -858,8 +933,13 @@ function App() {
   };
 
   const reset = useCallback(() => {
+    if (isPractice) {
+      setIsPractice(false);
+      createPackAndStart({ count: 30 });
+      return;
+    }
     resetToQuestions();
-  }, [resetToQuestions]);
+  }, [createPackAndStart, isPractice, resetToQuestions]);
 
   const ratio = total > 0 ? score / total : 0;
   let resultClass = 'result-average';
@@ -877,9 +957,14 @@ function App() {
     () => estimateIQPoint(score, total, difficulty),
     [score, total, difficulty]
   );
+  const helpLabel = t('onboarding.helpButton', 'Help / How to play');
+  const themeLabel = t('onboarding.themeLabel', 'Theme');
+  const seedPlaceholder = t('seed.placeholder', 'Seed');
+  const seedApplyLabel = t('seed.apply', 'Apply');
+  const practiceNotice = t('onboarding.practiceNoSave', 'Practice results are not saved.');
 
   useEffect(() => {
-    if (!finished) return;
+    if (!finished || isPractice) return;
     if (typeof window === 'undefined') return;
     const record = {
       correct: score,
@@ -895,7 +980,7 @@ function App() {
     } catch (error) {
       // noop: storage might be disabled
     }
-  }, [finished, score, total, totalSeconds, iqPoint, difficulty]);
+  }, [finished, score, total, totalSeconds, iqPoint, difficulty, isPractice]);
 
   const handleShare = async () => {
     if (!finished || typeof window === 'undefined') return;
@@ -931,6 +1016,17 @@ function App() {
 
   const handleSubmitScore = async () => {
     if (!finished || submittingScore || scoreSent) return;
+    if (isPractice) {
+      setToastMessage(practiceNotice);
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+      toastTimeoutRef.current = setTimeout(() => {
+        setToastMessage('');
+        toastTimeoutRef.current = null;
+      }, 3000);
+      return;
+    }
     setSubmitMsg('');
 
     const name = nickname.trim();
@@ -995,17 +1091,49 @@ function App() {
               <h1 className="title">{titleText}</h1>
             </div>
             <div className="header-controls">
-              {renderLanguageSwitch('language-switch-header')}
-              <select
-                className="theme-select"
-                value={theme}
-                onChange={handleThemeChange}
-                aria-label="Theme selection"
-              >
-                <option value="navy">Navy</option>
-                <option value="royal">Royal</option>
-                <option value="emerald">Emerald</option>
-              </select>
+              <div className="header-chip-row">
+                {renderLanguageSwitch('language-switch-header')}
+                <div
+                  role="radiogroup"
+                  aria-label={themeLabel}
+                  className="theme-swatch-row"
+                >
+                  {[
+                    { key: 'navy', label: 'Navy', cls: 'swatch-navy' },
+                    { key: 'royal', label: 'Royal', cls: 'swatch-royal' },
+                    { key: 'emerald', label: 'Emerald', cls: 'swatch-emerald' },
+                  ].map(({ key, label, cls }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      role="radio"
+                      aria-checked={theme === key}
+                      className={`theme-swatch ${cls} ${theme === key ? 'selected' : ''}`.trim()}
+                      onClick={() => setTheme(key)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setTheme(key);
+                        }
+                      }}
+                      title={label}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="icon-ghost"
+                  onClick={() => {
+                    setForceIntro(false);
+                    setOpenOnboarding(true);
+                  }}
+                  aria-label={helpLabel}
+                  aria-haspopup="dialog"
+                  aria-controls="onboarding-dialog"
+                >
+                  <span className="qmark" aria-hidden="true">?</span>
+                </button>
+              </div>
             </div>
           </div>
           </header>
@@ -1027,17 +1155,49 @@ function App() {
               <h1 className="title">{titleText}</h1>
             </div>
             <div className="header-controls">
-              {renderLanguageSwitch('language-switch-header')}
-              <select
-                className="theme-select"
-                value={theme}
-                onChange={handleThemeChange}
-                aria-label="Theme selection"
-              >
-                <option value="navy">Navy</option>
-                <option value="royal">Royal</option>
-                <option value="emerald">Emerald</option>
-              </select>
+              <div className="header-chip-row">
+                {renderLanguageSwitch('language-switch-header')}
+                <div
+                  role="radiogroup"
+                  aria-label={themeLabel}
+                  className="theme-swatch-row"
+                >
+                  {[
+                    { key: 'navy', label: 'Navy', cls: 'swatch-navy' },
+                    { key: 'royal', label: 'Royal', cls: 'swatch-royal' },
+                    { key: 'emerald', label: 'Emerald', cls: 'swatch-emerald' },
+                  ].map(({ key, label, cls }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      role="radio"
+                      aria-checked={theme === key}
+                      className={`theme-swatch ${cls} ${theme === key ? 'selected' : ''}`.trim()}
+                      onClick={() => setTheme(key)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setTheme(key);
+                        }
+                      }}
+                      title={label}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="icon-ghost"
+                  onClick={() => {
+                    setForceIntro(false);
+                    setOpenOnboarding(true);
+                  }}
+                  aria-label={helpLabel}
+                  aria-haspopup="dialog"
+                  aria-controls="onboarding-dialog"
+                >
+                  <span className="qmark" aria-hidden="true">?</span>
+                </button>
+              </div>
             </div>
           </div>
           </header>
@@ -1050,31 +1210,20 @@ function App() {
 
   return (
     <div className="app">
-      {showIntro && (
-        <div className="intro-overlay" role="dialog" aria-modal="true">
-          <div className="intro-card">
-            <img src="/logo.svg" alt="IQtest Mini logo" className="intro-logo" />
-            {renderLanguageSwitch('language-switch-intro')}
-            <select
-              className="theme-select intro-theme-select"
-              value={theme}
-              onChange={handleThemeChange}
-              aria-label="Theme selection"
-            >
-              <option value="navy">Navy</option>
-              <option value="royal">Royal</option>
-              <option value="emerald">Emerald</option>
-            </select>
-            <h2 className="intro-title">{introContent.heading}</h2>
-            <p className="intro-text">{introContent.body}</p>
-            <div className="intro-actions">
-              <button type="button" className="btn primary" onClick={handleIntroStart}>
-                {introContent.cta}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <OnboardingDialog
+        isOpen={openOnboarding}
+        lang={language}
+        t={t}
+        seed={seedInput}
+        onChangeSeed={setSeedInput}
+        onApplySeed={handleApplySeedFromDialog}
+        onStart={handleOnboardingStart}
+        onPractice={handlePracticeStart}
+        onClose={handleOnboardingClose}
+        languages={LANGUAGE_OPTIONS}
+        onSelectLanguage={handleLanguageChange}
+        forced={forceIntro}
+      />
       <div className="wrap">
         <header className="header">
           <div className="brand-row">
@@ -1083,17 +1232,49 @@ function App() {
               <h1 className="title">{titleText}</h1>
             </div>
             <div className="header-controls">
-              {renderLanguageSwitch('language-switch-header')}
-              <select
-                className="theme-select"
-                value={theme}
-                onChange={handleThemeChange}
-                aria-label="Theme selection"
-              >
-                <option value="navy">Navy</option>
-                <option value="royal">Royal</option>
-                <option value="emerald">Emerald</option>
-              </select>
+              <div className="header-chip-row">
+                {renderLanguageSwitch('language-switch-header')}
+                <div
+                  role="radiogroup"
+                  aria-label={themeLabel}
+                  className="theme-swatch-row"
+                >
+                  {[
+                    { key: 'navy', label: 'Navy', cls: 'swatch-navy' },
+                    { key: 'royal', label: 'Royal', cls: 'swatch-royal' },
+                    { key: 'emerald', label: 'Emerald', cls: 'swatch-emerald' },
+                  ].map(({ key, label, cls }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      role="radio"
+                      aria-checked={theme === key}
+                      className={`theme-swatch ${cls} ${theme === key ? 'selected' : ''}`.trim()}
+                      onClick={() => setTheme(key)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setTheme(key);
+                        }
+                      }}
+                      title={label}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="icon-ghost"
+                  onClick={() => {
+                    setForceIntro(false);
+                    setOpenOnboarding(true);
+                  }}
+                  aria-label={helpLabel}
+                  aria-haspopup="dialog"
+                  aria-controls="onboarding-dialog"
+                >
+                  <span className="qmark" aria-hidden="true">?</span>
+                </button>
+              </div>
             </div>
           </div>
           <div className="pills">
@@ -1129,23 +1310,35 @@ function App() {
               </button>
             ))}
           </div>
-          <form
-            onSubmit={handleSeedSubmit}
-            style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}
-          >
-            <input
-              id="seed-input"
-              type="text"
-              value={seedInput}
-              onChange={handleSeedInputChange}
-              placeholder="Seed"
-              aria-label="Seed"
-              style={{ padding: '6px 8px', minWidth: 120 }}
-            />
-            <button type="submit" className="btn ghost">
-              適用
+          <div className="header-utilities">
+            <form onSubmit={handleSeedSubmit} className="ob-control-row">
+              <input
+                id="seed-input"
+                type="text"
+                value={seedInput}
+                onChange={handleSeedInputChange}
+                placeholder={seedPlaceholder}
+                aria-label={seedPlaceholder}
+                className="ob-input"
+              />
+              <button type="submit" className="ob-button">
+                {seedApplyLabel}
+              </button>
+            </form>
+            <button
+              type="button"
+              className="icon-ghost"
+              onClick={() => {
+                setForceIntro(false);
+                setOpenOnboarding(true);
+              }}
+              aria-label={helpLabel}
+              aria-haspopup="dialog"
+              aria-controls="onboarding-dialog"
+            >
+              <span className="qmark" aria-hidden="true">?</span>
             </button>
-          </form>
+          </div>
         </div>
 
         {lastResult && (
@@ -1239,32 +1432,38 @@ function App() {
             <p className="result-iq">推定IQ: {Number.isFinite(iqPoint) ? iqPoint.toFixed(1) : '--'}</p>
             <p className="note result-message">{resultMessage}</p>
             <p className="note">※ 本デモは練習用です。正式なIQ検査とは異なります。</p>
-            <div style={{ marginTop: 16 }}>
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-                <input
-                  type="text"
-                  placeholder="ニックネーム (1〜24文字)"
-                  maxLength={24}
-                  value={nickname}
-                  onChange={(event) => setNickname(event.target.value)}
-                  disabled={submittingScore || scoreSent}
-                  style={{ minWidth: 160 }}
-                />
-                <button
-                  type="button"
-                  className="btn primary"
-                  onClick={handleSubmitScore}
-                  disabled={submittingScore || scoreSent}
-                >
-                  {scoreSent ? '送信済み' : submittingScore ? '送信中...' : 'スコアを送信'}
-                </button>
+            {isPractice ? (
+              <p className="note" style={{ marginTop: 16 }}>
+                {practiceNotice}
+              </p>
+            ) : (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    type="text"
+                    placeholder="ニックネーム (1〜24文字)"
+                    maxLength={24}
+                    value={nickname}
+                    onChange={(event) => setNickname(event.target.value)}
+                    disabled={submittingScore || scoreSent}
+                    style={{ minWidth: 160 }}
+                  />
+                  <button
+                    type="button"
+                    className="btn primary"
+                    onClick={handleSubmitScore}
+                    disabled={submittingScore || scoreSent}
+                  >
+                    {scoreSent ? '送信済み' : submittingScore ? '送信中...' : 'スコアを送信'}
+                  </button>
+                </div>
+                {submitMsg && (
+                  <p className="note" style={{ marginTop: 8 }}>
+                    {submitMsg}
+                  </p>
+                )}
               </div>
-              {submitMsg && (
-                <p className="note" style={{ marginTop: 8 }}>
-                  {submitMsg}
-                </p>
-              )}
-            </div>
+            )}
             <div className="actions" style={{ justifyContent: 'center' }}>
               <button className="btn ghost" onClick={handleShare}>結果を共有</button>
               <button className="btn primary" onClick={reset}>もう一度</button>

@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAnalytics, isSupported as analyticsSupported } from "firebase/analytics";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, initializeFirestore } from "firebase/firestore";
 import { getAuth, signInAnonymously } from "firebase/auth";
 
 const firebaseConfig = {
@@ -14,6 +14,11 @@ const firebaseConfig = {
 };
 
 export const app = initializeApp(firebaseConfig);
+
+initializeFirestore(app, {
+  experimentalForceLongPolling: true,
+  useFetchStreams: false,
+});
 
 const resolveAnalytics = () => {
   if (typeof window === "undefined") {
