@@ -74,10 +74,62 @@ const normalizeDifficulty = (value) => {
   return DIFFICULTY_ORDER.includes(normalized) ? normalized : 'medium';
 };
 
+const HISTORY_STORAGE_KEY = 'runs:v2';
+
 const getQuestionTimeLimit = (question) => {
   if (!question) return DEFAULT_QUESTION_TIME;
   const limit = toFiniteNumber(question.timeLimitSec, null);
   return limit ?? DEFAULT_QUESTION_TIME;
+};
+
+const erf = (x) => {
+  // Abramowitz and Stegun formula 7.1.26 approximation
+  const sign = x >= 0 ? 1 : -1;
+  const absX = Math.abs(x);
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const p = 0.3275911;
+  const t = 1 / (1 + p * absX);
+  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-absX * absX);
+  return sign * y;
+};
+
+const normalCdf = (value, mean = 0, sd = 1) => {
+  if (!Number.isFinite(value) || !Number.isFinite(mean) || !Number.isFinite(sd) || sd === 0) {
+    return 0.5;
+  }
+  const z = (value - mean) / (sd * Math.SQRT2);
+  return 0.5 * (1 + erf(z));
+};
+
+const getTopPercentileFromIQ = (iqValue) => {
+  if (!Number.isFinite(iqValue)) return null;
+  const tail = 1 - normalCdf(iqValue, 100, 15);
+  return clamp(tail * 100, 0.01, 99.99);
+};
+
+const getDailySeed = () => {
+  const now = new Date();
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const label = `${jst.getUTCFullYear()}${String(jst.getUTCMonth() + 1).padStart(2, '0')}${String(jst.getUTCDate()).padStart(2, '0')}_JST`;
+  return String(hashStringToSeed(label));
+};
+
+const formatHistoryTimestamp = (timestamp) => {
+  if (!timestamp) return '--';
+  try {
+    return new Date(timestamp).toLocaleString('ja-JP', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch (error) {
+    return '--';
+  }
 };
 
 const getByPath = (source, path) => {
@@ -367,6 +419,9 @@ function App() {
   const [seedInput, setSeedInput] = useState('');
   const [seedActive, setSeedActive] = useState(null);
   const [isPractice, setIsPractice] = useState(false);
+  const [answerLog, setAnswerLog] = useState([]);
+  const [recentRuns, setRecentRuns] = useState([]);
+  const [latestBadges, setLatestBadges] = useState([]);
   const difficultyOptions = useMemo(
     () => [
       { value: 'easy', label: 'Easy' },
@@ -383,6 +438,7 @@ function App() {
   const optionRefs = useRef([]);
   const questionsRef = useRef(questions);
   const onboardingInitRef = useRef(false);
+  const hasHistoryRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -515,6 +571,24 @@ function App() {
     questionsRef.current = questions;
   }, [questions]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = window.localStorage.getItem(HISTORY_STORAGE_KEY);
+      if (!stored) {
+        hasHistoryRef.current = false;
+        return;
+      }
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        setRecentRuns(parsed);
+        hasHistoryRef.current = parsed.length > 0;
+      }
+    } catch (error) {
+      hasHistoryRef.current = false;
+    }
+  }, []);
+
   const stopTimer = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -579,6 +653,8 @@ function App() {
     setSubmitMsg('');
     setSubmittingScore(false);
     setScoreSent(false);
+    setAnswerLog([]);
+    setLatestBadges([]);
   }, [clearFeedbackTimeout, stopTimer]);
 
   const createPackAndStart = useCallback(
@@ -698,6 +774,19 @@ function App() {
   const handleSeedInputChange = (event) => {
     setSeedInput(event.target.value);
   };
+
+  const handleDailyChallenge = useCallback(() => {
+    const nextSeed = getDailySeed();
+    applySeed(nextSeed);
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+    setToastMessage('デイリーシードを読み込みました');
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMessage('');
+      toastTimeoutRef.current = null;
+    }, 2500);
+  }, [applySeed]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -857,6 +946,17 @@ function App() {
       setElapsedSeconds((prev) => prev + timeLimit);
       setAnswerLocked(true);
       setFeedback('timeout');
+      const timedQuestion = questionsRef.current[current];
+      setAnswerLog((prev) => ([
+        ...prev,
+        {
+          index: current,
+          questionId: timedQuestion?.id ?? `q-${current}`,
+          correct: false,
+          timeSpent: timeLimit,
+          timedOut: true,
+        },
+      ]));
       clearFeedbackTimeout();
       feedbackTimeoutRef.current = setTimeout(() => {
         setFeedback(null);
@@ -901,6 +1001,16 @@ function App() {
     if (isCorrect) {
       setScore((s) => s + 1);
     }
+    setAnswerLog((prev) => ([
+      ...prev,
+      {
+        index: current,
+        questionId: currentQuestion?.id ?? `q-${current}`,
+        correct: isCorrect,
+        timeSpent,
+        timedOut: false,
+      },
+    ]));
 
     feedbackTimeoutRef.current = setTimeout(() => {
       setFeedback(null);
@@ -957,6 +1067,76 @@ function App() {
     () => estimateIQPoint(score, total, difficulty),
     [score, total, difficulty]
   );
+  const percentileTop = useMemo(
+    () => getTopPercentileFromIQ(iqPoint),
+    [iqPoint]
+  );
+  const percentileIndicatorPosition = useMemo(() => {
+    if (!Number.isFinite(iqPoint)) return null;
+    return clamp(((iqPoint - 55) / (145 - 55)) * 100, 0, 100);
+  }, [iqPoint]);
+  const historyPreview = useMemo(
+    () => recentRuns.slice(0, 5),
+    [recentRuns]
+  );
+  const gaussianTicks = [70, 85, 100, 115, 130];
+  const typeInsights = useMemo(() => {
+    if (!finished || answerLog.length === 0) return null;
+    const answered = answerLog.length;
+    const correctEntries = answerLog.filter((entry) => entry.correct);
+    const accuracy = answered > 0 ? correctEntries.length / answered : 0;
+    let abstractionAxis = '均衡';
+    let abstractionDesc = '抽象と具体を切り替えながら安定して解答しています。';
+    if (accuracy >= 0.78) {
+      abstractionAxis = '抽象';
+      abstractionDesc = '抽象パターンの差を素早く捉えています。';
+    } else if (accuracy <= 0.45) {
+      abstractionAxis = '具体';
+      abstractionDesc = '具体的な変化を丹念に追って答えを導いています。';
+    }
+    const correctNonTimeout = correctEntries.filter((entry) => !entry.timedOut);
+    const avgTime = correctNonTimeout.length > 0
+      ? correctNonTimeout.reduce((sum, entry) => sum + (entry.timeSpent ?? DEFAULT_QUESTION_TIME), 0) / correctNonTimeout.length
+      : DEFAULT_QUESTION_TIME;
+    const speedAxis = avgTime <= 12 ? '直観型' : 'ステップ型';
+    const speedDesc = speedAxis === '直観型'
+      ? 'ひらめきで瞬時に規則を見抜くスピードがあります。'
+      : '仮説検証を積み重ねて精度を高める丁寧さがあります。';
+    const halfPoint = Math.max(1, Math.floor((total || answered) / 2));
+    const firstHalf = answerLog.filter((entry) => entry.index < halfPoint);
+    const secondHalf = answerLog.filter((entry) => entry.index >= halfPoint);
+    const firstAcc = firstHalf.length > 0 ? firstHalf.filter((entry) => entry.correct).length / firstHalf.length : 0;
+    const secondAcc = secondHalf.length > 0 ? secondHalf.filter((entry) => entry.correct).length / secondHalf.length : 0;
+    const enduranceAxis = secondAcc >= firstAcc ? '耐久型' : '短期集中型';
+    const enduranceDesc = enduranceAxis === '耐久型'
+      ? '後半も集中力を維持して得点を積み上げられます。'
+      : '序盤に強く、後半のリズム調整でさらに伸ばせます。';
+    const wrongCount = answerLog.filter((entry) => !entry.correct && !entry.timedOut).length;
+    const timeoutCount = answerLog.filter((entry) => entry.timedOut).length;
+    const cautionAxis = wrongCount >= timeoutCount ? '秒読み型' : '慎重型';
+    const cautionDesc = cautionAxis === '秒読み型'
+      ? 'ギリギリまで粘って解答する攻めのスタイル。'
+      : '確信が持てないときは潔くパスして整える慎重派。';
+    const features = [
+      `${abstractionAxis}傾向：${abstractionDesc}`,
+      `${speedAxis}：${speedDesc}`,
+      `${enduranceAxis}：${enduranceDesc}`,
+      `${cautionAxis}：${cautionDesc}`,
+    ];
+    let advice = '得意なテンポを保ちながら、後半も同じリズムで走り切りましょう。';
+    if (speedAxis === '直観型' && cautionAxis === '秒読み型') {
+      advice = 'ひらめきの後に図形差分を一呼吸で確認すると精度がさらに上がります。';
+    } else if (speedAxis === 'ステップ型' && timeoutCount > wrongCount) {
+      advice = '最初の10秒で大きな変化候補を2つに絞る練習が時短に効果的です。';
+    } else if (enduranceAxis === '短期集中型') {
+      advice = '5問ごとに視線を外すなどの小休止で後半の集中力を維持してみましょう。';
+    }
+    return {
+      label: `${abstractionAxis}・${speedAxis}`,
+      features,
+      advice,
+    };
+  }, [answerLog, finished, total]);
   const helpLabel = t('onboarding.helpButton', 'Help / How to play');
   const themeLabel = t('onboarding.themeLabel', 'Theme');
   const seedPlaceholder = t('seed.placeholder', 'Seed');
@@ -980,7 +1160,37 @@ function App() {
     } catch (error) {
       // noop: storage might be disabled
     }
-  }, [finished, score, total, totalSeconds, iqPoint, difficulty, isPractice]);
+
+    const entry = {
+      timestamp: Date.now(),
+      score,
+      total,
+      difficulty,
+      seed: seedActive,
+      iq_est: Number.isFinite(iqPoint) ? Number(iqPoint) : null,
+    };
+    setRecentRuns((prev) => {
+      const next = [entry, ...prev].slice(0, 20);
+      try {
+        window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(next));
+      } catch (error) {
+        // ignore storage issues for history
+      }
+      return next;
+    });
+    const badgesEarned = [];
+    if (difficulty === 'hard' && total >= 30 && score === 30) {
+      badgesEarned.push('金環');
+    }
+    if (difficulty === 'mixed' && score >= 28) {
+      badgesEarned.push('彗星');
+    }
+    if (!hasHistoryRef.current) {
+      badgesEarned.push('航海者');
+    }
+    setLatestBadges(badgesEarned);
+    hasHistoryRef.current = true;
+  }, [finished, score, total, totalSeconds, iqPoint, difficulty, isPractice, seedActive]);
 
   const handleShare = async () => {
     if (!finished || typeof window === 'undefined') return;
@@ -1004,6 +1214,47 @@ function App() {
       }, 3000);
     } catch (error) {
       setToastMessage('URLのコピーに失敗しました');
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+      toastTimeoutRef.current = setTimeout(() => {
+        setToastMessage('');
+        toastTimeoutRef.current = null;
+      }, 4000);
+    }
+  };
+
+  const handleSeedChallengeShare = async () => {
+    if (!finished || typeof window === 'undefined') return;
+    if (!seedActive) {
+      setToastMessage('Seedを設定すると共有できます');
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+      toastTimeoutRef.current = setTimeout(() => {
+        setToastMessage('');
+        toastTimeoutRef.current = null;
+      }, 3000);
+      return;
+    }
+    const params = new URLSearchParams({
+      seed: seedActive,
+      difficulty,
+    });
+    const shareUrl = `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setToastMessage('SeedのURLをコピーしました');
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
+      }
+      toastTimeoutRef.current = setTimeout(() => {
+        setToastMessage('');
+        toastTimeoutRef.current = null;
+      }, 3000);
+    } catch (error) {
+      setToastMessage('クリップボードのコピーに失敗しました');
       if (toastTimeoutRef.current) {
         clearTimeout(toastTimeoutRef.current);
       }
@@ -1310,6 +1561,14 @@ function App() {
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            className="btn ghost daily-btn"
+            onClick={handleDailyChallenge}
+            aria-label="デイリーチャレンジを読み込む"
+          >
+            デイリー
+          </button>
           <div className="header-utilities">
             <form onSubmit={handleSeedSubmit} className="ob-control-row">
               <input
@@ -1428,16 +1687,71 @@ function App() {
           </div>
         ) : (
           <div className={`card center result ${resultClass}`}>
-            <div className="score">あなたのスコア: {score}/{total}</div>
-            <p className="result-iq">推定IQ: {Number.isFinite(iqPoint) ? iqPoint.toFixed(1) : '--'}</p>
+            <div className="result-headline">
+              <div className="score">あなたのスコア: {score}/{total}</div>
+              <p className="result-iq">推定IQ: {Number.isFinite(iqPoint) ? iqPoint.toFixed(1) : '--'}</p>
+            </div>
+            {percentileTop != null && (
+              <div className="percentile-section">
+                <div className="percentile-label">
+                  上位：{Number.isFinite(percentileTop) ? percentileTop.toFixed(1) : '--'}%
+                </div>
+                <div className="distribution-chart" aria-label="正規分布における推定IQの位置">
+                  <div className="distribution-curve">
+                    {percentileIndicatorPosition != null && (
+                      <span
+                        className="distribution-indicator"
+                        style={{ left: `${percentileIndicatorPosition}%` }}
+                      />
+                    )}
+                  </div>
+                  <div className="distribution-scale">
+                    {gaussianTicks.map((tick) => (
+                      <span key={tick}>{tick}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
             <p className="note result-message">{resultMessage}</p>
             <p className="note">※ 本デモは練習用です。正式なIQ検査とは異なります。</p>
+            {typeInsights && (
+              <div className="type-card">
+                <div className="type-title">推論タイプ：{typeInsights.label}</div>
+                <div className="type-features">
+                  {typeInsights.features.map((feature) => (
+                    <span key={feature}>・{feature}</span>
+                  ))}
+                </div>
+                <p className="type-advice">
+                  <strong>アドバイス：</strong>
+                  {typeInsights.advice}
+                </p>
+              </div>
+            )}
+            {latestBadges.length > 0 && (
+              <div className="badge-row" aria-label="獲得バッジ">
+                {latestBadges.map((badge) => {
+                  let badgeClass = 'badge-chip badge-voyager';
+                  if (badge === '金環') {
+                    badgeClass = 'badge-chip badge-gold';
+                  } else if (badge === '彗星') {
+                    badgeClass = 'badge-chip badge-comet';
+                  }
+                  return (
+                    <span key={badge} className={badgeClass}>
+                      {badge}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
             {isPractice ? (
               <p className="note" style={{ marginTop: 16 }}>
                 {practiceNotice}
               </p>
             ) : (
-              <div style={{ marginTop: 16 }}>
+              <div style={{ marginTop: 16 }} className="submission-block">
                 <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
                   <input
                     type="text"
@@ -1466,8 +1780,29 @@ function App() {
             )}
             <div className="actions" style={{ justifyContent: 'center' }}>
               <button className="btn ghost" onClick={handleShare}>結果を共有</button>
+              <button className="btn ghost" onClick={handleSeedChallengeShare}>このSeedで友達に挑戦させる</button>
               <button className="btn primary" onClick={reset}>もう一度</button>
             </div>
+            {historyPreview.length > 0 && (
+              <div className="history-card">
+                <div className="history-title">最近の挑戦（最新5件）</div>
+                <ul className="history-list">
+                  {historyPreview.map((run, index) => (
+                    <li key={`${run.timestamp ?? 'run'}-${index}`}>
+                      <span className="history-time">{formatHistoryTimestamp(run.timestamp)}</span>
+                      <span className="history-tag">{(run.difficulty || '').toUpperCase()}</span>
+                      <span className="history-score">{run.score}/{run.total}</span>
+                      <span className="history-iq">
+                        IQ {Number.isFinite(Number(run.iq_est)) ? Number(run.iq_est).toFixed(1) : '--'}
+                      </span>
+                      {run.seed && (
+                        <span className="history-seed">Seed {run.seed}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
         <Leaderboard />
